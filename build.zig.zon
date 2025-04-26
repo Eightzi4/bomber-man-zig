@@ -1,0 +1,21 @@
+.{
+    .name = .PlayingWithFire,
+    .version = "0.0.0",
+    .fingerprint = 0xe8c5c823e29bcba8,
+    .minimum_zig_version = "0.14.0",
+    .dependencies = .{
+        .raylib_zig = .{
+            .url = "git+https://github.com/Not-Nik/raylib-zig?ref=devel#d4fc514d54a3b37b9b3e4f4983f611c3469e8c2a",
+            .hash = "raylib_zig-5.6.0-dev-KE8REHguBQAE0xoNkra7mtEqr8cCZHk7k_03txLZB-cZ",
+        },
+        .box2d = .{
+            .url = "git+https://github.com/allyourcodebase/box2d?ref=main#bbe6c5bacc0066edee04011a3baed69b517edf20",
+            .hash = "box2d-3.0.0-1-AAAAAH8XAADUTGcWSHwszHXeUywIFxMa8_KStR3mHGlX",
+        },
+    },
+    .paths = .{
+        "build.zig",
+        "build.zig.zon",
+        "src",
+    },
+}
