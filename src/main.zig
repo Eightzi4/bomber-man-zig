@@ -50,8 +50,6 @@ pub fn main() !void {
         },
     );
 
-    std.debug.print("{} vs {}", .{ @sizeOf(types.Texture2), @sizeOf(types.Texture) });
-
     while (!rl.windowShouldClose()) {
         game.update();
         game.draw();

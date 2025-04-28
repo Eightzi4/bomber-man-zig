@@ -8,7 +8,7 @@ const types = @import("types.zig");
 const cons = @import("constants.zig");
 const Game = @import("Game.zig");
 
-const Dynamite = struct {
+pub const Dynamite = struct {
     position: b2.b2Vec2,
     radius: u8,
     team_color: types.TeamColor,
@@ -30,10 +30,10 @@ const Dynamite = struct {
         self.timer -= 1;
     }
 
-    pub fn draw(self: @This(), textures: std.enums.EnumArray(types.Texture, rl.Texture2D)) void {
+    pub fn draw(self: @This(), textures: std.HashMap(types.TextureWrapper, rl.Texture2D, types.TextureContext, std.hash_map.default_max_load_percentage)) void {
         if (self.timer > 0) {
             rl.drawTexture(
-                if (self.team_color == .blue) textures.get(.blue_dynamite) else textures.get(.red_dynamite),
+                textures.get(.dynamite(self.team_color)) orelse @panic("HashMap doesn't contain this key!"),
                 @intFromFloat(self.position.x - cons.CELL_SIZE / 2),
                 @intFromFloat(self.position.y - cons.CELL_SIZE / 2),
                 rl.Color.white,
@@ -52,14 +52,14 @@ const KeyBindings = struct {
 
 speed: f32,
 body_id: b2.b2BodyId,
-team: types.TeamColor,
+team_color: types.TeamColor,
 optional_dynamites: [10]?Dynamite = [_]?Dynamite{null} ** 10,
 key_bindings: KeyBindings,
 
-pub fn init(position: b2.b2Vec2, world_id: b2.b2WorldId, team: types.TeamColor, key_bindings: KeyBindings) @This() {
+pub fn init(position: b2.b2Vec2, world_id: b2.b2WorldId, team_color: types.TeamColor, key_bindings: KeyBindings) @This() {
     return .{
         .speed = cons.CELL_SIZE * 4,
-        .team = team,
+        .team_color = team_color,
         .key_bindings = key_bindings,
         .body_id = D: {
             var body_def = b2.b2DefaultBodyDef();
@@ -90,13 +90,13 @@ pub fn update(self: *@This()) void {
     if (rl.isKeyPressed(self.key_bindings.throw_dynamite)) self.throwDynamite();
 }
 
-pub fn draw(self: *@This(), textures: std.enums.EnumArray(types.Texture, rl.Texture2D)) void {
+pub fn draw(self: *@This(), textures: std.HashMap(types.TextureWrapper, rl.Texture2D, types.TextureContext, std.hash_map.default_max_load_percentage)) void {
     self.drawDynamites(textures);
 
     const position = b2.b2Body_GetPosition(self.body_id);
 
     rl.drawTexture(
-        if (self.team == .blue) textures.get(.blue_player) else textures.get(.red_player),
+        textures.get(.player(self.team_color)) orelse @panic("HashMap doesn't contain this key!"),
         @intFromFloat(position.x - cons.CELL_SIZE / 2),
         @intFromFloat(position.y - cons.CELL_SIZE / 2),
         rl.Color.white,
@@ -106,7 +106,7 @@ pub fn draw(self: *@This(), textures: std.enums.EnumArray(types.Texture, rl.Text
 fn throwDynamite(self: *@This()) void {
     for (&self.optional_dynamites) |*dynamite_slot| {
         if (dynamite_slot.* == null) {
-            dynamite_slot.* = Dynamite.init(b2.b2Body_GetPosition(self.body_id), self.team);
+            dynamite_slot.* = Dynamite.init(b2.b2Body_GetPosition(self.body_id), self.team_color);
 
             return;
         }
@@ -119,7 +119,7 @@ pub fn updateDynamites(self: *@This()) void {
     };
 }
 
-fn drawDynamites(self: *@This(), textures: std.enums.EnumArray(types.Texture, rl.Texture2D)) void {
+fn drawDynamites(self: *@This(), textures: std.HashMap(types.TextureWrapper, rl.Texture2D, types.TextureContext, std.hash_map.default_max_load_percentage)) void {
     for (&self.optional_dynamites) |*optinal_dynamite| if (optinal_dynamite.*) |*dynamite| {
         dynamite.draw(textures);
     };
