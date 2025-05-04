@@ -1,4 +1,7 @@
 const std = @import("std");
+const rl = @import("raylib");
+
+pub const TextureHashMap = std.HashMap(Texture, rl.Texture2D, TextureContext, std.hash_map.default_max_load_percentage);
 
 pub const Vec2 = struct {
     x: i32,
@@ -37,7 +40,7 @@ pub const ExplosionVariant = enum(u2) {
     unused,
 };
 
-pub const Texture = packed union {
+pub const TextureData = packed union {
     ground: void,
     wall: void,
     barrel: void,
@@ -46,53 +49,53 @@ pub const Texture = packed union {
     explosion: packed struct { team_color: TeamColor, variant: ExplosionVariant },
 };
 
-pub const TextureWrapper = packed struct {
-    tag: std.meta.FieldEnum(Texture),
-    data: Texture,
+pub const Texture = packed struct {
+    tag: std.meta.FieldEnum(TextureData),
+    data: TextureData,
 
-    pub fn init(tag: std.meta.FieldEnum(Texture), data: Texture) TextureWrapper {
+    pub fn init(tag: std.meta.FieldEnum(TextureData), data: TextureData) Texture {
         return .{
             .tag = tag,
             .data = data,
         };
     }
 
-    pub fn ground() TextureWrapper {
+    pub fn ground() Texture {
         return .{
             .tag = .ground,
             .data = .{ .ground = {} },
         };
     }
 
-    pub fn wall() TextureWrapper {
+    pub fn wall() Texture {
         return .{
             .tag = .wall,
             .data = .{ .wall = {} },
         };
     }
 
-    pub fn barrel() TextureWrapper {
+    pub fn barrel() Texture {
         return .{
             .tag = .barrel,
             .data = .{ .barrel = {} },
         };
     }
 
-    pub fn player(team_color: TeamColor) TextureWrapper {
+    pub fn player(team_color: TeamColor) Texture {
         return .{
             .tag = .player,
             .data = .{ .player = .{ .team_color = team_color } },
         };
     }
 
-    pub fn dynamite(team_color: TeamColor) TextureWrapper {
+    pub fn dynamite(team_color: TeamColor) Texture {
         return .{
             .tag = .dynamite,
             .data = .{ .dynamite = .{ .team_color = team_color } },
         };
     }
 
-    pub fn explosion(team_color: TeamColor, variant: ExplosionVariant) TextureWrapper {
+    pub fn explosion(team_color: TeamColor, variant: ExplosionVariant) Texture {
         return .{
             .tag = .explosion,
             .data = .{ .explosion = .{
@@ -102,7 +105,7 @@ pub const TextureWrapper = packed struct {
         };
     }
 
-    pub fn eql(a: TextureWrapper, b: TextureWrapper) bool {
+    pub fn eql(a: Texture, b: Texture) bool {
         if (a.tag != b.tag) return false;
 
         return switch (a.tag) {
@@ -113,22 +116,16 @@ pub const TextureWrapper = packed struct {
         };
     }
 
-    pub fn hash(self: TextureWrapper) u64 {
+    pub fn hash(self: Texture) u64 {
         var hasher = std.hash.Wyhash.init(0);
 
-        hasher.update(&[1]u8{@as(u8, @intFromEnum(self.tag))});
+        hasher.update(&[_]u8{@intFromEnum(self.tag)});
 
         switch (self.tag) {
             .ground, .wall, .barrel => {},
-            .player => {
-                hasher.update(&[1]u8{@as(u8, @intFromEnum(self.data.player.team_color))});
-            },
-            .dynamite => {
-                hasher.update(&[1]u8{@as(u8, @intFromEnum(self.data.dynamite.team_color))});
-            },
-            .explosion => {
-                hasher.update(&[2]u8{ @as(u8, @intFromEnum(self.data.explosion.team_color)), @as(u8, @intFromEnum(self.data.explosion.variant)) });
-            },
+            .explosion => hasher.update(&[_]u8{ @intFromEnum(self.data.explosion.team_color), @intFromEnum(self.data.explosion.variant) }),
+            .dynamite => hasher.update(&[_]u8{@intFromEnum(self.data.dynamite.team_color)}),
+            .player => hasher.update(&[_]u8{@intFromEnum(self.data.player.team_color)}),
         }
 
         return hasher.final();
@@ -136,6 +133,6 @@ pub const TextureWrapper = packed struct {
 };
 
 pub const TextureContext = struct {
-    hash: *const fn (TextureWrapper) u64 = TextureWrapper.hash,
-    eql: *const fn (TextureWrapper, TextureWrapper) bool = TextureWrapper.eql,
+    hash: *const fn (Texture) u64 = Texture.hash,
+    eql: *const fn (Texture, Texture) bool = Texture.eql,
 };

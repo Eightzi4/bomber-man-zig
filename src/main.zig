@@ -9,6 +9,7 @@ const Player = @import("Player.zig");
 pub fn main() !void {
     var debug_allocator = std.heap.DebugAllocator(.{}){};
     defer _ = debug_allocator.deinit();
+
     const random = D: {
         var seed: u64 = undefined;
         std.posix.getrandom(std.mem.asBytes(&seed)) catch unreachable;
@@ -28,26 +29,14 @@ pub fn main() !void {
         .{ .x = cons.CELL_SIZE * 5 + cons.CELL_SIZE / 2, .y = cons.CELL_SIZE + cons.CELL_SIZE / 2 },
         game.world_id,
         .blue,
-        .{
-            .left = .a,
-            .right = .d,
-            .up = .w,
-            .down = .s,
-            .throw_dynamite = .space,
-        },
+        .{ .a, .d, .w, .s, .space },
     );
 
     game.optional_players[1] = Player.init(
         .{ .x = cons.CELL_SIZE * 17 + cons.CELL_SIZE / 2, .y = cons.CELL_SIZE * 11 + cons.CELL_SIZE / 2 },
         game.world_id,
         .red,
-        .{
-            .left = .left,
-            .right = .right,
-            .up = .up,
-            .down = .down,
-            .throw_dynamite = .enter,
-        },
+        .{ .left, .right, .up, .down, .enter },
     );
 
     while (!rl.windowShouldClose()) {

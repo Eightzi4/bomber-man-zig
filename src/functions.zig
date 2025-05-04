@@ -11,10 +11,6 @@ pub fn isPointInRect(point: types.Vec2, rect_pos: types.Vec2, rect_size: types.V
     return point.x >= rect_pos.x and point.x < rect_pos.x + rect_size.x and point.y >= rect_pos.y and point.y < rect_pos.y + rect_size.y;
 }
 
-pub fn drawGui() void {
-    rl.drawRectangle(0, 0, cons.GUI_SIZE, cons.WINDOW_SIZE.y, rl.Color.gray);
-}
-
 pub fn gridPositionFromPixelPosition(pixel_position: b2.b2Vec2) types.Vec2 {
     return .{
         .x = @divExact(@as(i32, @intFromFloat(pixel_position.x - cons.CELL_SIZE / 2 - cons.GUI_SIZE)), cons.CELL_SIZE),

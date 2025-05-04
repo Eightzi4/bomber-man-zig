@@ -8,30 +8,46 @@ const types = @import("types.zig");
 const cons = @import("constants.zig");
 const Game = @import("Game.zig");
 
-pub const Dynamite = struct {
+const Action = struct {
+    binded_key: rl.KeyboardKey,
+    cached_input: bool = false,
+};
+
+const PlayerActions = struct {
+    left: Action,
+    right: Action,
+    up: Action,
+    down: Action,
+    throw_dynamite: Action,
+};
+
+const Dynamite = struct {
     position: b2.b2Vec2,
     radius: u8,
     team_color: types.TeamColor,
-    timer: i16,
+    state: enum(u8) {
+        idle,
+        exploding,
+        exploded,
+    },
+    timer: f32,
 
-    pub fn init(position: b2.b2Vec2, team_color: types.TeamColor) @This() {
+    pub fn init(aligned_position: b2.b2Vec2, team_color: types.TeamColor) @This() {
         return .{
-            .position = .{
-                .x = @divTrunc(position.x, cons.CELL_SIZE) * cons.CELL_SIZE + cons.CELL_SIZE / 2,
-                .y = @divTrunc(position.y, cons.CELL_SIZE) * cons.CELL_SIZE + cons.CELL_SIZE / 2,
-            },
+            .position = aligned_position,
             .radius = 4,
             .team_color = team_color,
-            .timer = 500,
+            .state = .idle,
+            .timer = 3,
         };
     }
 
     pub fn update(self: *@This()) void {
-        self.timer -= 1;
+        self.timer -= cons.PHYSICS_TIMESTEP;
     }
 
-    pub fn draw(self: @This(), textures: std.HashMap(types.TextureWrapper, rl.Texture2D, types.TextureContext, std.hash_map.default_max_load_percentage)) void {
-        if (self.timer > 0) {
+    pub fn draw(self: @This(), textures: std.HashMap(types.Texture, rl.Texture2D, types.TextureContext, std.hash_map.default_max_load_percentage)) void {
+        if (self.state == .idle) {
             rl.drawTexture(
                 textures.get(.dynamite(self.team_color)) orelse @panic("HashMap doesn't contain this key!"),
                 @intFromFloat(self.position.x - cons.CELL_SIZE / 2),
@@ -40,27 +56,33 @@ pub const Dynamite = struct {
             );
         }
     }
-};
 
-const KeyBindings = struct {
-    left: rl.KeyboardKey,
-    right: rl.KeyboardKey,
-    up: rl.KeyboardKey,
-    down: rl.KeyboardKey,
-    throw_dynamite: rl.KeyboardKey,
+    pub fn switchState(self: *@This()) void {
+        switch (self.state) {
+            .idle => {
+                self.state = .exploding;
+                self.timer = cons.EXPLOSION_DURATION;
+            },
+            .exploding => {
+                self.state = .exploded;
+            },
+            .exploded => unreachable,
+        }
+    }
 };
 
 speed: f32,
-body_id: b2.b2BodyId,
+old_position: b2.b2Vec2,
 team_color: types.TeamColor,
-optional_dynamites: [10]?Dynamite = [_]?Dynamite{null} ** 10,
-key_bindings: KeyBindings,
+body_id: b2.b2BodyId,
+optional_dynamites: [10]?Dynamite,
+actions: PlayerActions,
 
-pub fn init(position: b2.b2Vec2, world_id: b2.b2WorldId, team_color: types.TeamColor, key_bindings: KeyBindings) @This() {
+pub fn init(position: b2.b2Vec2, world_id: b2.b2WorldId, team_color: types.TeamColor, key_bindings: [@typeInfo(PlayerActions).@"struct".fields.len]rl.KeyboardKey) @This() {
     return .{
-        .speed = cons.CELL_SIZE * 4,
+        .speed = cons.CELL_SIZE * 5,
+        .old_position = position,
         .team_color = team_color,
-        .key_bindings = key_bindings,
         .body_id = D: {
             var body_def = b2.b2DefaultBodyDef();
             body_def.position = position;
@@ -74,52 +96,115 @@ pub fn init(position: b2.b2Vec2, world_id: b2.b2WorldId, team_color: types.TeamC
 
             break :D body_id;
         },
+        .optional_dynamites = .{null} ** 10,
+        .actions = .{
+            .left = .{ .binded_key = key_bindings[0] },
+            .right = .{ .binded_key = key_bindings[1] },
+            .up = .{ .binded_key = key_bindings[2] },
+            .down = .{ .binded_key = key_bindings[3] },
+            .throw_dynamite = .{ .binded_key = key_bindings[4] },
+        },
     };
 }
 
 pub fn update(self: *@This()) void {
-    self.updateDynamites();
+    // Keys that are held down
+    inline for (@typeInfo(@TypeOf(self.actions)).@"struct".fields[0..4]) |field| {
+        @field(self.actions, field.name).cached_input = rl.isKeyDown(@field(self.actions, field.name).binded_key);
+    }
 
-    const input_vector = b2.b2Vec2{
-        .x = if (rl.isKeyDown(self.key_bindings.right)) 1.0 else if (rl.isKeyDown(self.key_bindings.left)) -1.0 else 0.0,
-        .y = if (rl.isKeyDown(self.key_bindings.down)) 1.0 else if (rl.isKeyDown(self.key_bindings.up)) -1.0 else 0.0,
-    };
+    // Keys that are pressed (+ sticky)
+    inline for (@typeInfo(@TypeOf(self.actions)).@"struct".fields[4..]) |field| {
+        if (!@field(self.actions, field.name).cached_input) {
+            @field(self.actions, field.name).cached_input = rl.isKeyPressed(@field(self.actions, field.name).binded_key);
+        }
+    }
 
-    b2.b2Body_SetLinearVelocity(self.body_id, b2.b2MulSV(self.speed, input_vector));
-
-    if (rl.isKeyPressed(self.key_bindings.throw_dynamite)) self.throwDynamite();
+    self.old_position = b2.b2Body_GetPosition(self.body_id);
 }
 
-pub fn draw(self: *@This(), textures: std.HashMap(types.TextureWrapper, rl.Texture2D, types.TextureContext, std.hash_map.default_max_load_percentage)) void {
+pub fn fixedUpdate(self: *@This()) void {
+    self.updateDynamites();
+
+    handleMovement(self.body_id, self.speed, self.actions);
+
+    if (self.actions.throw_dynamite.cached_input) self.throwDynamite();
+}
+
+pub fn draw(self: *@This(), textures: std.HashMap(types.Texture, rl.Texture2D, types.TextureContext, std.hash_map.default_max_load_percentage), alpha: f32) void {
     self.drawDynamites(textures);
 
     const position = b2.b2Body_GetPosition(self.body_id);
+    const draw_position = b2.b2Vec2{
+        .x = self.old_position.x * (1 - alpha) + position.x * alpha,
+        .y = self.old_position.y * (1 - alpha) + position.y * alpha,
+    };
 
     rl.drawTexture(
         textures.get(.player(self.team_color)) orelse @panic("HashMap doesn't contain this key!"),
-        @intFromFloat(position.x - cons.CELL_SIZE / 2),
-        @intFromFloat(position.y - cons.CELL_SIZE / 2),
+        @intFromFloat(draw_position.x - cons.CELL_SIZE / 2),
+        @intFromFloat(draw_position.y - cons.CELL_SIZE / 2),
         rl.Color.white,
     );
 }
 
+fn handleMovement(body_id: b2.b2BodyId, speed: f32, actions: PlayerActions) void {
+    var input_vector = b2.b2Vec2{
+        .x = @floatFromInt(@as(i2, @intFromBool(actions.right.cached_input)) - @as(i2, @intFromBool(actions.left.cached_input))),
+        .y = @floatFromInt(@as(i2, @intFromBool(actions.down.cached_input)) - @as(i2, @intFromBool(actions.up.cached_input))),
+    };
+
+    const position = b2.b2Body_GetPosition(body_id);
+
+    // Sliding around corners (only works if walls are placed on even grid coordinates)
+    if (input_vector.x == 0 and input_vector.y != 0) {
+        const grid_position_x = @divFloor(@as(i32, @intFromFloat(position.x - cons.GUI_SIZE)), cons.CELL_SIZE);
+        const offset = position.x - cons.GUI_SIZE - cons.CELL_SIZE * @as(f32, @floatFromInt(grid_position_x)) - cons.CELL_SIZE / 2;
+
+        if (@mod(grid_position_x, 2) == 0)
+            input_vector.x = if (offset < 0) -1 else 1
+        else
+            input_vector.x = if (offset < -cons.CELL_SIZE / 5) 1 else if (offset > cons.CELL_SIZE / 5) -1 else 0;
+    } else if (input_vector.y == 0 and input_vector.x != 0) {
+        const grid_position_y = @divFloor(@as(i32, @intFromFloat(position.y)), cons.CELL_SIZE);
+        const offset = position.y - cons.CELL_SIZE * @as(f32, @floatFromInt(grid_position_y)) - cons.CELL_SIZE / 2;
+
+        if (@mod(grid_position_y, 2) == 0)
+            input_vector.y = if (offset < 0) -1 else 1
+        else
+            input_vector.y = if (offset < -cons.CELL_SIZE / 5) 1 else if (offset > cons.CELL_SIZE / 5) -1 else 0;
+    }
+
+    b2.b2Body_SetLinearVelocity(body_id, b2.b2MulSV(speed, input_vector));
+}
+
 fn throwDynamite(self: *@This()) void {
+    self.actions.throw_dynamite.cached_input = false;
+
+    const position = b2.b2Body_GetPosition(self.body_id);
+    const aligned_position = b2.b2Vec2{
+        .x = @divTrunc(position.x, cons.CELL_SIZE) * cons.CELL_SIZE + cons.CELL_SIZE / 2,
+        .y = @divTrunc(position.y, cons.CELL_SIZE) * cons.CELL_SIZE + cons.CELL_SIZE / 2,
+    };
+
     for (&self.optional_dynamites) |*dynamite_slot| {
-        if (dynamite_slot.* == null) {
-            dynamite_slot.* = Dynamite.init(b2.b2Body_GetPosition(self.body_id), self.team_color);
+        if (dynamite_slot.*) |dynamite| {
+            if (dynamite.position.x == aligned_position.x and dynamite.position.y == aligned_position.y) break;
+        } else {
+            dynamite_slot.* = Dynamite.init(aligned_position, self.team_color);
 
             return;
         }
     }
 }
 
-pub fn updateDynamites(self: *@This()) void {
+fn updateDynamites(self: *@This()) void {
     for (&self.optional_dynamites) |*optinal_dynamite| if (optinal_dynamite.*) |*dynamite| {
         dynamite.update();
     };
 }
 
-fn drawDynamites(self: *@This(), textures: std.HashMap(types.TextureWrapper, rl.Texture2D, types.TextureContext, std.hash_map.default_max_load_percentage)) void {
+fn drawDynamites(self: *@This(), textures: std.HashMap(types.Texture, rl.Texture2D, types.TextureContext, std.hash_map.default_max_load_percentage)) void {
     for (&self.optional_dynamites) |*optinal_dynamite| if (optinal_dynamite.*) |*dynamite| {
         dynamite.draw(textures);
     };
