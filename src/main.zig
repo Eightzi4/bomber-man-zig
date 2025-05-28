@@ -3,6 +3,7 @@ const rl = @import("raylib");
 
 const types = @import("types.zig");
 const cons = @import("constants.zig");
+const Menu = @import("Menu.zig");
 const Game = @import("Game.zig");
 const Player = @import("Player.zig");
 
@@ -14,13 +15,23 @@ pub fn main() !void {
         var seed: u64 = undefined;
         std.posix.getrandom(std.mem.asBytes(&seed)) catch unreachable;
         var prng = std.Random.DefaultPrng.init(seed);
+
         break :D prng.random();
     };
 
-    rl.initWindow(cons.WINDOW_SIZE.x, cons.WINDOW_SIZE.y, "Playing with Fire");
+    rl.initWindow(cons.WINDOW_SIZE.x, cons.WINDOW_SIZE.y, "Playing with Fire Reborn");
     defer rl.closeWindow();
 
     rl.setTargetFPS(rl.getMonitorRefreshRate(rl.getCurrentMonitor()));
+
+    var menu = Menu.init();
+    while (!menu.play_game) {
+        if (menu.exit_game or rl.windowShouldClose()) return;
+
+        menu.update();
+        menu.draw();
+    }
+    defer menu.deinit();
 
     var game = Game.init(debug_allocator.allocator(), random);
     defer game.deinit();

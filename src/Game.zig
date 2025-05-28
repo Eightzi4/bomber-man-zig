@@ -74,11 +74,84 @@ pub fn draw(self: *@This()) void {
         player.draw(self.textures, alpha);
     };
 
-    drawGui();
+    drawGui(self);
+
+    //rl.setTextureFilter(self.textures.get(.idk()) orelse @panic(""), rl.TextureFilter.point); // might need this
+    //const mask_shader = rl.loadShader(null, "mask.fs") catch @panic("Failed to load shader!");
+    //rl.beginShaderMode(mask_shader);
+    //rl.setShaderValue(mask_shader, rl.getShaderLocation(mask_shader, "color"), // Get the uniform location
+    //    &[3]f32{ 0.0, 1.0, 0.0 }, // Pointer to the color data
+    //    rl.ShaderUniformDataType.vec3 // Specify vec4 type
+    //); // Pass player color
+    //rl.drawTexture(self.textures.get(.idk()) orelse @panic(""), 0, 0, .white); // WHITE preserves original alpha
+    //rl.endShaderMode();
 }
 
-fn drawGui() void {
-    rl.drawRectangle(0, 0, cons.GUI_SIZE, cons.WINDOW_SIZE.y, rl.Color.gray);
+fn drawGui(self: *@This()) void {
+    const padding = cons.GUI_SIZE / 20;
+    const player_gui_size = types.Vec2{ .x = cons.GUI_SIZE - padding * 2, .y = (cons.WINDOW_SIZE.y - cons.GUI_SIZE / 2) / 4 - padding * 2 };
+    const name = "negr bagr";
+
+    rl.drawRectangle(0, 0, cons.GUI_SIZE, cons.WINDOW_SIZE.y, .gray);
+
+    for (&self.optional_players, 0..) |*optional_player, i| if (optional_player.*) |player| {
+        const position = types.Vec2{ .x = padding, .y = padding + (player_gui_size.y + padding) * @as(i32, @intCast(i)) };
+
+        // Background
+        funcs.drawRectangleWithOutline(
+            .{ .x = position.x, .y = position.y },
+            player_gui_size,
+            switch (player.team_color) {
+                .red => rl.Color{ .r = 255, .g = 200, .b = 200, .a = 255 },
+                .blue => rl.Color{ .r = 200, .g = 200, .b = 255, .a = 255 },
+                .green => rl.Color{ .r = 200, .g = 255, .b = 200, .a = 255 },
+                .yellow => rl.Color{ .r = 255, .g = 255, .b = 200, .a = 255 },
+            },
+            cons.CELL_SIZE / 20,
+            .black,
+        );
+
+        // Player icon
+        const player_texture = self.textures.get(.player(player.team_color)) orelse @panic("Missing player texture");
+
+        rl.drawTexture(player_texture, position.x + padding, position.y + padding, .white);
+
+        // Player name
+        var text_size: i32 = cons.CELL_SIZE;
+        var text_width = rl.measureText(name, text_size);
+
+        while (text_width > cons.CELL_SIZE * 2 and text_size > 1) : (text_size -= 1) text_width = rl.measureText(name, text_size);
+
+        rl.drawText(name, padding * 3 + player_texture.width, position.y + padding, text_size, .black);
+
+        // Health
+        for (0..cons.MAX_HEALTH) |j| {
+            if (j < player.health) {
+                rl.drawCircle(
+                    padding * 3 + player_texture.width + cons.CELL_SIZE / 4 + @divTrunc(player_gui_size.x - padding * 2 - player_texture.width, 3) * @as(i32, @intCast(j)),
+                    position.y + player_texture.height - padding * 2 + cons.CELL_SIZE / 4,
+                    cons.CELL_SIZE / 4,
+                    if (player.invincibility_timer > 0) .gray else .red,
+                );
+            } else {
+                rl.drawLine(
+                    padding * 3 + player_texture.width + @divTrunc(player_gui_size.x - padding * 2 - player_texture.width, 3) * @as(i32, @intCast(j)),
+                    position.y + player_texture.height - padding * 2,
+                    padding * 3 + player_texture.width + cons.CELL_SIZE / 2 + @divTrunc(player_gui_size.x - padding * 2 - player_texture.width, 3) * @as(i32, @intCast(j)),
+                    position.y + player_texture.height - padding * 2 + cons.CELL_SIZE / 2,
+                    .black,
+                );
+
+                rl.drawLine(
+                    padding * 3 + player_texture.width + @divTrunc(player_gui_size.x - padding * 2 - player_texture.width, 3) * @as(i32, @intCast(j)),
+                    position.y + player_texture.height - padding * 2 + cons.CELL_SIZE / 2,
+                    padding * 3 + player_texture.width + cons.CELL_SIZE / 2 + @divTrunc(player_gui_size.x - padding * 2 - player_texture.width, 3) * @as(i32, @intCast(j)),
+                    position.y + player_texture.height - padding * 2,
+                    .black,
+                );
+            }
+        }
+    };
 }
 
 fn generateCellGrid(random: std.Random, world_id: b2.b2WorldId) [cons.GRID_SIZE.y][cons.GRID_SIZE.x]Cell {
@@ -169,6 +242,7 @@ fn loadTextures(allocator: std.mem.Allocator) types.TextureHashMap {
 
                 break :D .explosion(team_color, variant);
             },
+            .idk => .idk(),
         };
 
         const texture_path = std.fs.path.joinZ(allocator, &.{ cons.ASSET_DIRECTORY_PATH, entry.name }) catch @panic("Out of memory!");
@@ -209,13 +283,47 @@ fn drawBackground(self: *@This()) void {
     }
 }
 
-// TODO: Refactor
+// TODO: Refactor into smaller functions
 fn handleExplosions(self: *@This()) void {
     for (&self.optional_players) |*optional_player| if (optional_player.*) |*player| {
         for (&player.optional_dynamites) |*optional_dynamite| if (optional_dynamite.*) |*dynamite| {
             if (dynamite.timer > 0) {
                 if (dynamite.state == .exploding) {
-                    // TODO: hurt players inside explosion
+                    const grid_position = funcs.gridPositionFromPixelPosition(dynamite.position);
+
+                    D: for (&self.optional_players) |*optional_player_2| if (optional_player_2.*) |*player_2| {
+                        const player_2_position = b2.b2Body_GetPosition(player_2.body_id);
+                        const player_2_grid_position = types.Vec2{
+                            .x = @divFloor(@as(i32, @intFromFloat(player_2_position.x - cons.GUI_SIZE)), cons.CELL_SIZE),
+                            .y = @divFloor(@as(i32, @intFromFloat(player_2_position.y)), cons.CELL_SIZE),
+                        };
+
+                        if (player_2_grid_position.x == grid_position.x and player_2_grid_position.y == grid_position.y) {
+                            player_2.hurt();
+
+                            break :D;
+                        }
+                    };
+
+                    for (cons.DIRECTIONS) |dir| {
+                        for (1..dynamite.radius) |offset| {
+                            const cell_position = grid_position.add(dir.mul_scalar(@intCast(offset)));
+
+                            D: for (&self.optional_players) |*optional_player_2| if (optional_player_2.*) |*player_2| {
+                                const player_2_position = b2.b2Body_GetPosition(player_2.body_id);
+                                const player_2_grid_position = types.Vec2{
+                                    .x = @divFloor(@as(i32, @intFromFloat(player_2_position.x - cons.GUI_SIZE)), cons.CELL_SIZE),
+                                    .y = @divFloor(@as(i32, @intFromFloat(player_2_position.y)), cons.CELL_SIZE),
+                                };
+
+                                if (player_2_grid_position.x == cell_position.x and player_2_grid_position.y == cell_position.y) {
+                                    player_2.hurt();
+
+                                    break :D;
+                                }
+                            };
+                        }
+                    }
                 }
             } else {
                 const grid_position = funcs.gridPositionFromPixelPosition(dynamite.position);
@@ -234,9 +342,9 @@ fn handleExplosions(self: *@This()) void {
                                     D: {
                                         const variant: types.ExplosionVariant = if (i < 2) .horizontal else .vertical;
                                         if (cell.texture.tag == .explosion and cell.texture.data.explosion.team_color == dynamite.team_color and cell.texture.data.explosion.variant != variant)
-                                            break :D .crossed
-                                        else
-                                            break :D variant;
+                                            break :D .crossed;
+
+                                        break :D variant;
                                     },
                                 );
 

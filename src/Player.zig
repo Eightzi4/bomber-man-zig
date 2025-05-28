@@ -46,7 +46,7 @@ const Dynamite = struct {
         self.timer -= cons.PHYSICS_TIMESTEP;
     }
 
-    pub fn draw(self: @This(), textures: std.HashMap(types.Texture, rl.Texture2D, types.TextureContext, std.hash_map.default_max_load_percentage)) void {
+    pub fn draw(self: @This(), textures: types.TextureHashMap) void {
         if (self.state == .idle) {
             rl.drawTexture(
                 textures.get(.dynamite(self.team_color)) orelse @panic("HashMap doesn't contain this key!"),
@@ -71,15 +71,19 @@ const Dynamite = struct {
     }
 };
 
+health: u8,
+invincibility_timer: f32,
 speed: f32,
 old_position: b2.b2Vec2,
 team_color: types.TeamColor,
 body_id: b2.b2BodyId,
-optional_dynamites: [10]?Dynamite,
+optional_dynamites: [cons.MAX_DYNAMITE_COUNT]?Dynamite,
 actions: PlayerActions,
 
 pub fn init(position: b2.b2Vec2, world_id: b2.b2WorldId, team_color: types.TeamColor, key_bindings: [@typeInfo(PlayerActions).@"struct".fields.len]rl.KeyboardKey) @This() {
     return .{
+        .health = 3,
+        .invincibility_timer = 0,
         .speed = cons.CELL_SIZE * 5,
         .old_position = position,
         .team_color = team_color,
@@ -96,7 +100,7 @@ pub fn init(position: b2.b2Vec2, world_id: b2.b2WorldId, team_color: types.TeamC
 
             break :D body_id;
         },
-        .optional_dynamites = .{null} ** 10,
+        .optional_dynamites = .{null} ** cons.MAX_DYNAMITE_COUNT,
         .actions = .{
             .left = .{ .binded_key = key_bindings[0] },
             .right = .{ .binded_key = key_bindings[1] },
@@ -126,12 +130,14 @@ pub fn update(self: *@This()) void {
 pub fn fixedUpdate(self: *@This()) void {
     self.updateDynamites();
 
+    self.invincibility_timer -= cons.PHYSICS_TIMESTEP;
+
     handleMovement(self.body_id, self.speed, self.actions);
 
     if (self.actions.throw_dynamite.cached_input) self.throwDynamite();
 }
 
-pub fn draw(self: *@This(), textures: std.HashMap(types.Texture, rl.Texture2D, types.TextureContext, std.hash_map.default_max_load_percentage), alpha: f32) void {
+pub fn draw(self: *@This(), textures: types.TextureHashMap, alpha: f32) void {
     self.drawDynamites(textures);
 
     const position = b2.b2Body_GetPosition(self.body_id);
@@ -146,6 +152,14 @@ pub fn draw(self: *@This(), textures: std.HashMap(types.Texture, rl.Texture2D, t
         @intFromFloat(draw_position.y - cons.CELL_SIZE / 2),
         rl.Color.white,
     );
+}
+
+// TODO: Remove '> 0' check
+pub fn hurt(self: *@This()) void {
+    if (self.invincibility_timer <= 0 and self.health > 0) {
+        self.health -= 1;
+        self.invincibility_timer = cons.INVINCIBILITY_DURATION;
+    }
 }
 
 fn handleMovement(body_id: b2.b2BodyId, speed: f32, actions: PlayerActions) void {
@@ -187,6 +201,7 @@ fn throwDynamite(self: *@This()) void {
         .y = @divTrunc(position.y, cons.CELL_SIZE) * cons.CELL_SIZE + cons.CELL_SIZE / 2,
     };
 
+    // This still allows multiple dynamites to be placed in single cell, but unlikely to happen
     for (&self.optional_dynamites) |*dynamite_slot| {
         if (dynamite_slot.*) |dynamite| {
             if (dynamite.position.x == aligned_position.x and dynamite.position.y == aligned_position.y) break;
@@ -204,7 +219,7 @@ fn updateDynamites(self: *@This()) void {
     };
 }
 
-fn drawDynamites(self: *@This(), textures: std.HashMap(types.Texture, rl.Texture2D, types.TextureContext, std.hash_map.default_max_load_percentage)) void {
+fn drawDynamites(self: *@This(), textures: types.TextureHashMap) void {
     for (&self.optional_dynamites) |*optinal_dynamite| if (optinal_dynamite.*) |*dynamite| {
         dynamite.draw(textures);
     };

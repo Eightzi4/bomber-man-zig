@@ -17,3 +17,12 @@ pub fn gridPositionFromPixelPosition(pixel_position: b2.b2Vec2) types.Vec2 {
         .y = @divExact(@as(i32, @intFromFloat(pixel_position.y - cons.CELL_SIZE / 2)), cons.CELL_SIZE),
     };
 }
+
+pub fn drawRectangleWithOutline(pos: types.Vec2, size: types.Vec2, color: rl.Color, outline_thickness: f32, outline_color: rl.Color) void {
+    rl.drawRectangle(pos.x, pos.y, size.x, size.y, color);
+    rl.drawRectangleLinesEx(
+        .{ .x = @floatFromInt(pos.x), .y = @floatFromInt(pos.y), .width = @floatFromInt(size.x), .height = @floatFromInt(size.y) },
+        outline_thickness,
+        outline_color,
+    );
+}
