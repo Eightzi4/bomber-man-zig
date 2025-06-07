@@ -1,5 +1,11 @@
 const std = @import("std");
 const rl = @import("raylib");
+const b2 = @cImport({
+    @cInclude("box2d/box2d.h");
+});
+
+const cons = @import("constants.zig");
+const funcs = @import("functions.zig");
 
 pub const Vec2 = struct {
     x: i32,
@@ -24,11 +30,43 @@ pub const Vec2 = struct {
     }
 };
 
-pub const TeamColor = enum {
-    blue,
-    red,
-    yellow,
-    green,
+pub const Texture = enum(u8) {
+    ground,
+    wall,
+    death_wall,
+    barrel,
+    dynamite_1,
+    dynamite_2,
+    explosion_1,
+    explosion_2,
+    hearth,
+    player_down_1,
+    player_down_2,
+    player_down_3,
+    player_side_1,
+    player_side_2,
+    player_side_3,
+    player_up_1,
+    player_up_2,
+};
+
+pub const TeamTextures = struct {
+    player_textures: PlayerTextures,
+    dynamite_textures: [2]rl.Texture2D,
+    explosion_textures: [2]rl.Texture2D,
+};
+
+pub const PlayerTextures = struct {
+    side: [3]rl.Texture2D,
+    down: [2]rl.Texture2D,
+    up: [2]rl.Texture2D,
+};
+
+pub const Team = enum {
+    alpha,
+    beta,
+    gamma,
+    delta,
 };
 
 pub const ExplosionVariant = enum {
@@ -37,109 +75,129 @@ pub const ExplosionVariant = enum {
     crossed,
 };
 
-pub const TextureData = union {
-    ground: void,
-    wall: void,
-    barrel: void,
-    player: struct { team_color: TeamColor },
-    dynamite: struct { team_color: TeamColor },
-    explosion: struct { team_color: TeamColor, variant: ExplosionVariant },
-    idk: void,
+pub const DynamiteState = enum {
+    idle,
+    exploding,
+    exploded,
 };
 
-pub const Texture = struct {
-    tag: std.meta.FieldEnum(TextureData),
-    data: TextureData,
+pub const Wall = struct {
+    body_id: b2.b2BodyId,
+};
 
-    pub fn idk() Texture {
-        return .{
-            .tag = .idk,
-            .data = .{ .idk = {} },
-        };
+pub const Barrel = struct {
+    body_id: b2.b2BodyId,
+};
+
+pub const Explosion = struct {
+    team: Team,
+    variant: ExplosionVariant,
+    timer: f32,
+
+    pub fn update(self: *@This()) void {
+        self.timer -= cons.PHYSICS_TIMESTEP;
     }
+};
 
-    pub fn init(tag: std.meta.FieldEnum(TextureData), data: TextureData) Texture {
-        return .{
-            .tag = tag,
-            .data = data,
-        };
-    }
+pub const Cell = struct {
+    tag: Texture,
+    variant: CellVariant,
 
-    pub fn ground() Texture {
+    pub fn initGround() @This() {
         return .{
             .tag = .ground,
-            .data = .{ .ground = {} },
+            .variant = .{ .ground = {} },
         };
     }
 
-    pub fn wall() Texture {
+    pub fn initWall(x: u8, y: u8, world_id: b2.b2WorldId) @This() {
         return .{
             .tag = .wall,
-            .data = .{ .wall = {} },
+            .variant = .{ .wall = .{ .body_id = funcs.createCollider(x, y, world_id) } },
         };
     }
 
-    pub fn barrel() Texture {
+    pub fn initBarrel(x: u8, y: u8, world_id: b2.b2WorldId) @This() {
         return .{
             .tag = .barrel,
-            .data = .{ .barrel = {} },
+            .variant = .{ .barrel = .{ .body_id = funcs.createCollider(x, y, world_id) } },
         };
     }
 
-    pub fn player(team_color: TeamColor) Texture {
+    pub fn initExplosion(team: Team, variant: ExplosionVariant) @This() {
         return .{
-            .tag = .player,
-            .data = .{ .player = .{ .team_color = team_color } },
-        };
-    }
-
-    pub fn dynamite(team_color: TeamColor) Texture {
-        return .{
-            .tag = .dynamite,
-            .data = .{ .dynamite = .{ .team_color = team_color } },
-        };
-    }
-
-    pub fn explosion(team_color: TeamColor, variant: ExplosionVariant) Texture {
-        return .{
-            .tag = .explosion,
-            .data = .{ .explosion = .{
-                .team_color = team_color,
+            .tag = if (variant == .crossed) .explosion_2 else .explosion_1,
+            .variant = .{ .explosion_1 = .{
+                .team = team,
                 .variant = variant,
+                .timer = cons.EXPLOSION_DURATION,
             } },
         };
     }
 
-    pub fn eql(a: Texture, b: Texture) bool {
-        if (a.tag != b.tag) return false;
+    pub fn initDynamite(team: Team) @This() {
+        return .{
+            .tag = .dynamite_1,
+            .variant = .{ .dynamite_1 = .init(team) },
+        };
+    }
+};
 
-        return switch (a.tag) {
-            .ground, .wall, .barrel, .idk => true,
-            .player => a.data.player.team_color == b.data.player.team_color,
-            .dynamite => a.data.dynamite.team_color == b.data.dynamite.team_color,
-            .explosion => a.data.explosion.team_color == b.data.explosion.team_color and a.data.explosion.variant == b.data.explosion.variant,
+pub const CellVariant = union {
+    ground: void,
+    wall: Wall,
+    death_wall: Wall,
+    barrel: Barrel,
+    dynamite_1: Dynamite,
+    dynamite_2: Dynamite,
+    explosion_1: Explosion,
+    explosion_2: Explosion,
+    hearth: void,
+    player_down_1: void,
+    player_down_2: void,
+    player_down_3: void,
+    player_side_1: void,
+    player_side_2: void,
+    player_side_3: void,
+    player_up_1: void,
+    player_up_2: void,
+};
+
+pub const Dynamite = struct {
+    team: Team,
+    state: DynamiteState,
+    timer: f32,
+    radius: u8,
+
+    pub fn init(team: Team) @This() {
+        return .{
+            .team = team,
+            .state = .idle,
+            .timer = 3,
+            .radius = 4,
         };
     }
 
-    pub fn hash(self: Texture) u64 {
-        var hasher = std.hash.Wyhash.init(0);
+    pub fn update(self: *@This()) void {
+        self.timer -= cons.PHYSICS_TIMESTEP;
+    }
 
-        hasher.update(&[_]u8{@intFromEnum(self.tag)});
-
-        switch (self.tag) {
-            .ground, .wall, .barrel, .idk => {},
-            .explosion => hasher.update(&[_]u8{ @intFromEnum(self.data.explosion.team_color), @intFromEnum(self.data.explosion.variant) }),
-            .dynamite => hasher.update(&[_]u8{@intFromEnum(self.data.dynamite.team_color)}),
-            .player => hasher.update(&[_]u8{@intFromEnum(self.data.player.team_color)}),
+    pub fn draw(self: @This(), textures: [2]rl.Texture2D) void {
+        if (self.state == .idle) {
+            funcs.drawTexture(textures[0], self.position);
         }
+    }
 
-        return hasher.final();
+    pub fn switchState(self: *@This()) void {
+        switch (self.state) {
+            .idle => {
+                self.state = .exploding;
+                self.timer = cons.EXPLOSION_DURATION;
+            },
+            .exploding => {
+                self.state = .exploded;
+            },
+            .exploded => unreachable,
+        }
     }
 };
-
-pub const TextureContext = struct {
-    hash: *const fn (Texture) u64 = Texture.hash,
-    eql: *const fn (Texture, Texture) bool = Texture.eql,
-};
-
-pub const TextureHashMap = std.HashMap(Texture, rl.Texture2D, TextureContext, std.hash_map.default_max_load_percentage);

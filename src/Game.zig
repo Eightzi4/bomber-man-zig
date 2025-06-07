@@ -8,32 +8,28 @@ const types = @import("types.zig");
 const funcs = @import("functions.zig");
 const cons = @import("constants.zig");
 const Player = @import("Player.zig");
-
-pub const Cell = struct {
-    texture: types.Texture,
-    body_id: ?b2.b2BodyId,
-};
+const Data = @import("Data.zig");
 
 world_id: b2.b2WorldId,
-cell_grid: [cons.GRID_SIZE.y][cons.GRID_SIZE.x]Cell,
-textures: types.TextureHashMap,
-optional_players: [4]?Player,
+cell_grid: [cons.GRID_SIZE.y][cons.GRID_SIZE.x]types.Cell,
+explosion_grid: [cons.GRID_SIZE.y][cons.GRID_SIZE.x]?types.ExplosionVariant,
+team_textures: std.enums.EnumArray(types.Team, types.TeamTextures),
+opt_players: std.enums.EnumArray(types.Team, ?Player),
 accumulator: f32,
+textures: *const std.enums.EnumArray(types.Texture, rl.Texture2D),
 
-pub fn init(allocator: std.mem.Allocator, random: std.Random) @This() {
+pub fn init(data: *Data) @This() {
     const world_id = b2.b2CreateWorld(&b2.b2DefaultWorldDef());
+
     return .{
         .world_id = world_id,
-        .cell_grid = generateCellGrid(random, world_id),
-        .textures = loadTextures(allocator),
-        .optional_players = .{null} ** 4,
+        .cell_grid = generateCellGrid(data.rand_gen, world_id),
+        .explosion_grid = @splat(@splat(null)),
+        .team_textures = createTeamTextures(data.team_colors, data.textures),
+        .opt_players = .initFill(null),
         .accumulator = 0,
+        .textures = &data.textures,
     };
-}
-
-pub fn deinit(self: *@This()) void {
-    unloadTextures(self.textures);
-    self.textures.deinit();
 }
 
 pub fn update(self: *@This()) void {
@@ -47,17 +43,32 @@ pub fn update(self: *@This()) void {
         self.accumulator -= cons.PHYSICS_TIMESTEP;
     }
 
-    for (&self.optional_players) |*optional_player| if (optional_player.*) |*player| {
+    for (&self.opt_players.values) |*opt_player| if (opt_player.*) |*player| {
         player.update();
     };
 }
 
 fn fixedUpdate(self: *@This()) void {
-    for (&self.optional_players) |*p| if (p.*) |*player| {
+    var iterator = self.opt_players.iterator();
+
+    while (iterator.next()) |opt_player| if (opt_player.value.*) |*player| {
         player.fixedUpdate();
+
+        if (player.actions.get(.place_dynamite).cached_input) {
+            const position = b2.b2Body_GetPosition(player.body_id);
+            const aligned_position = b2.b2Vec2{
+                .x = @divTrunc(position.x, cons.CELL_SIZE) * cons.CELL_SIZE + cons.CELL_SIZE / 2,
+                .y = @divTrunc(position.y, cons.CELL_SIZE) * cons.CELL_SIZE + cons.CELL_SIZE / 2,
+            };
+            const grid_position = funcs.gridPositionFromPixelPosition(aligned_position);
+            self.cell_grid[@intCast(grid_position.y)][@intCast(grid_position.x)] = .initDynamite(opt_player.key);
+            player.actions.getPtr(.place_dynamite).cached_input = false;
+        }
     };
 
-    handleExplosions(self);
+    //handleExplosions(self);
+    decayExplosions(self);
+    updateDynamitesAndExplosions(self);
 
     b2.b2World_Step(self.world_id, cons.PHYSICS_TIMESTEP, cons.PHYSICS_SUBSTEP_COUNT);
 }
@@ -70,21 +81,11 @@ pub fn draw(self: *@This()) void {
 
     const alpha = self.accumulator / cons.PHYSICS_TIMESTEP;
 
-    for (&self.optional_players) |*optional_player| if (optional_player.*) |*player| {
-        player.draw(self.textures, alpha);
+    for (&self.opt_players.values) |*opt_player| if (opt_player.*) |*player| {
+        player.draw(alpha);
     };
 
-    drawGui(self);
-
-    //rl.setTextureFilter(self.textures.get(.idk()) orelse @panic(""), rl.TextureFilter.point); // might need this
-    //const mask_shader = rl.loadShader(null, "mask.fs") catch @panic("Failed to load shader!");
-    //rl.beginShaderMode(mask_shader);
-    //rl.setShaderValue(mask_shader, rl.getShaderLocation(mask_shader, "color"), // Get the uniform location
-    //    &[3]f32{ 0.0, 1.0, 0.0 }, // Pointer to the color data
-    //    rl.ShaderUniformDataType.vec3 // Specify vec4 type
-    //); // Pass player color
-    //rl.drawTexture(self.textures.get(.idk()) orelse @panic(""), 0, 0, .white); // WHITE preserves original alpha
-    //rl.endShaderMode();
+    //drawGui(self);
 }
 
 fn drawGui(self: *@This()) void {
@@ -94,19 +95,14 @@ fn drawGui(self: *@This()) void {
 
     rl.drawRectangle(0, 0, cons.GUI_SIZE, cons.WINDOW_SIZE.y, .gray);
 
-    for (&self.optional_players, 0..) |*optional_player, i| if (optional_player.*) |player| {
+    for (&self.opt_players.values, 0..) |*opt_player, i| if (opt_player.*) |player| {
         const position = types.Vec2{ .x = padding, .y = padding + (player_gui_size.y + padding) * @as(i32, @intCast(i)) };
 
         // Background
         funcs.drawRectangleWithOutline(
             .{ .x = position.x, .y = position.y },
             player_gui_size,
-            switch (player.team_color) {
-                .red => rl.Color{ .r = 255, .g = 200, .b = 200, .a = 255 },
-                .blue => rl.Color{ .r = 200, .g = 200, .b = 255, .a = 255 },
-                .green => rl.Color{ .r = 200, .g = 255, .b = 200, .a = 255 },
-                .yellow => rl.Color{ .r = 255, .g = 255, .b = 200, .a = 255 },
-            },
+            .blue,
             cons.CELL_SIZE / 20,
             .black,
         );
@@ -154,39 +150,13 @@ fn drawGui(self: *@This()) void {
     };
 }
 
-fn generateCellGrid(random: std.Random, world_id: b2.b2WorldId) [cons.GRID_SIZE.y][cons.GRID_SIZE.x]Cell {
-    var cell_grid = [_][cons.GRID_SIZE.x]Cell{[_]Cell{
-        Cell{
-            .texture = .ground(),
-            .body_id = null,
-        },
-    } ** cons.GRID_SIZE.x} ** cons.GRID_SIZE.y;
-
-    const createCollider = struct {
-        fn createCollider(x: usize, y: usize, world_id_2: b2.b2WorldId) b2.b2BodyId {
-            var body_def = b2.b2DefaultBodyDef();
-            body_def.position = .{
-                .x = @floatFromInt(cons.GUI_SIZE + cons.CELL_SIZE * x + cons.CELL_SIZE / 2),
-                .y = @floatFromInt(cons.CELL_SIZE * y + cons.CELL_SIZE / 2),
-            };
-
-            const body_id = b2.b2CreateBody(world_id_2, &body_def);
-
-            _ = b2.b2CreatePolygonShape(
-                body_id,
-                &b2.b2DefaultShapeDef(),
-                &b2.b2MakeBox(cons.CELL_SIZE / 2, cons.CELL_SIZE / 2),
-            );
-
-            return body_id;
-        }
-    }.createCollider;
+fn generateCellGrid(random: std.Random, world_id: b2.b2WorldId) [cons.GRID_SIZE.y][cons.GRID_SIZE.x]types.Cell {
+    var cell_grid: [cons.GRID_SIZE.y][cons.GRID_SIZE.x]types.Cell = @splat(@splat(.initGround()));
 
     for (&cell_grid, 0..) |*row, y| {
         for (row, 0..) |*cell, x| {
             if (y % (cons.GRID_SIZE.y - 1) == 0 or x % (cons.GRID_SIZE.x - 1) == 0 or x % 2 == 0 and y % 2 == 0) {
-                cell.texture = .wall();
-                cell.body_id = createCollider(x, y, world_id);
+                cell.* = .initWall(@intCast(x), @intCast(y), world_id);
             } else {
                 const max_y = cons.GRID_SIZE.y - y - 1;
                 const max_x = cons.GRID_SIZE.x - x - 1;
@@ -194,8 +164,7 @@ fn generateCellGrid(random: std.Random, world_id: b2.b2WorldId) [cons.GRID_SIZE.
                 if (!(@min(x, max_x) < 4 and @min(y, max_y) < 4 and @min(x, max_x) + @min(y, max_y) < 5) and
                     (random.boolean() or random.boolean()))
                 {
-                    cell.texture = .barrel();
-                    cell.body_id = createCollider(x, y, world_id);
+                    cell.* = .initBarrel(@intCast(x), @intCast(y), world_id);
                 }
             }
         }
@@ -204,94 +173,226 @@ fn generateCellGrid(random: std.Random, world_id: b2.b2WorldId) [cons.GRID_SIZE.
     return cell_grid;
 }
 
-fn loadTextures(allocator: std.mem.Allocator) types.TextureHashMap {
-    var dir = std.fs.cwd().openDir(cons.ASSET_DIRECTORY_PATH, .{ .iterate = true }) catch {
-        @panic("Failed to open assets directory!");
-    };
-    defer dir.close();
+fn createTeamTextures(team_colors: std.enums.EnumArray(types.Team, rl.Color), textures: std.enums.EnumArray(types.Texture, rl.Texture2D)) std.enums.EnumArray(types.Team, types.TeamTextures) {
+    var team_textures = std.enums.EnumArray(types.Team, types.TeamTextures).initUndefined();
+    const shader = rl.loadShader(null, "mask.fs") catch @panic("Failed to load shader!");
+    defer rl.unloadShader(shader);
 
-    var textures = types.TextureHashMap.initContext(allocator, .{});
-
-    var file_iterator = dir.iterate();
-    while (file_iterator.next() catch @panic("Directory iteration failed!")) |entry| {
-        if (entry.kind != .file) continue;
-
-        const ext = std.fs.path.extension(entry.name);
-        if (!std.mem.eql(u8, ext, ".png")) @panic("Unsupported asset file type!");
-
-        const file_name = entry.name[0 .. entry.name.len - ext.len];
-        var file_name_parts_iterator = std.mem.splitAny(u8, file_name, "_");
-
-        const key: types.Texture = switch (std.meta.stringToEnum(std.meta.FieldEnum(types.TextureData), file_name_parts_iterator.next() orelse @panic("Asset file has no name!")).?) {
-            .ground => .ground(),
-            .wall => .wall(),
-            .barrel => .barrel(),
-            .player => D: {
-                const team_color = std.meta.stringToEnum(types.TeamColor, file_name_parts_iterator.next() orelse @panic("Couldn't parse string to TeamColor! Bad naming?")).?;
-
-                break :D .player(team_color);
+    for (std.enums.values(types.Team)) |team| {
+        const color = team_colors.get(team);
+        const dynamite_textures = [_]rl.Texture2D{
+            applyShaderToTexture(shader, color, textures.get(.dynamite_1)),
+            applyShaderToTexture(shader, color, textures.get(.dynamite_2)),
+        };
+        const explosion_textures = [_]rl.Texture2D{
+            applyShaderToTexture(shader, color, textures.get(.explosion_1)),
+            applyShaderToTexture(shader, color, textures.get(.explosion_2)),
+        };
+        const player_textures = types.PlayerTextures{
+            .side = .{
+                applyShaderToTexture(shader, color, textures.get(.player_side_1)),
+                applyShaderToTexture(shader, color, textures.get(.player_side_2)),
+                applyShaderToTexture(shader, color, textures.get(.player_side_3)),
             },
-            .dynamite => D: {
-                const team_color = std.meta.stringToEnum(types.TeamColor, file_name_parts_iterator.next() orelse @panic("Couldn't parse string to TeamColor! Bad naming?")).?;
-
-                break :D .dynamite(team_color);
+            .down = .{
+                applyShaderToTexture(shader, color, textures.get(.player_down_1)),
+                applyShaderToTexture(shader, team_colors.get(team), textures.get(.player_down_2)),
             },
-            .explosion => D: {
-                const team_color = std.meta.stringToEnum(types.TeamColor, file_name_parts_iterator.next() orelse @panic("Couldn't parse string to TeamColor! Bad naming?")).?;
-                const variant = std.meta.stringToEnum(types.ExplosionVariant, file_name_parts_iterator.next() orelse @panic("Couldn't parse string to ExplosionVariant! Bad naming?")).?;
-
-                break :D .explosion(team_color, variant);
+            .up = .{
+                applyShaderToTexture(shader, color, textures.get(.player_up_1)),
+                applyShaderToTexture(shader, color, textures.get(.player_up_2)),
             },
-            .idk => .idk(),
         };
 
-        const texture_path = std.fs.path.joinZ(allocator, &.{ cons.ASSET_DIRECTORY_PATH, entry.name }) catch @panic("Out of memory!");
-        defer allocator.free(texture_path);
-
-        var image = rl.loadImage(texture_path) catch @panic("Failed to load image!");
-        defer rl.unloadImage(image);
-        image.resize(cons.CELL_SIZE, cons.CELL_SIZE);
-
-        const texture = rl.loadTextureFromImage(image) catch @panic("Failed to create texture!");
-
-        textures.put(key, texture) catch @panic("Out of memory!");
+        team_textures.set(team, .{ .dynamite_textures = dynamite_textures, .explosion_textures = explosion_textures, .player_textures = player_textures });
     }
 
-    return textures;
+    return team_textures;
 }
 
-fn unloadTextures(textures: types.TextureHashMap) void {
-    var iterator = textures.iterator();
-    while (iterator.next()) |texture| rl.unloadTexture(texture.value_ptr.*);
+fn applyShaderToTexture(shader: rl.Shader, color: rl.Color, texture: rl.Texture2D) rl.Texture2D {
+    var result: rl.Texture2D = undefined;
+    const target = rl.loadRenderTexture(texture.width, texture.height) catch @panic("Failed to load render texture!");
+    defer rl.unloadRenderTexture(target);
+
+    rl.beginTextureMode(target);
+    rl.clearBackground(.blank);
+
+    rl.beginShaderMode(shader);
+    rl.setShaderValue(shader, rl.getShaderLocation(shader, "color"), &color.normalize(), rl.ShaderUniformDataType.vec4);
+    rl.drawTexture(texture, 0, 0, .white);
+    rl.endShaderMode();
+    rl.endTextureMode();
+
+    var image = rl.loadImageFromTexture(target.texture) catch @panic("Failed to load image from texture!");
+    defer rl.unloadImage(image);
+    image.flipVertical();
+
+    result = rl.loadTextureFromImage(image) catch @panic("Failed to load texture from image!");
+    return result;
 }
 
 fn drawBackground(self: *@This()) void {
+    const ground_texture = self.textures.get(.ground);
+
+    rl.setTextureWrap(ground_texture, rl.TextureWrap.repeat);
+
+    const dst = rl.Rectangle{
+        .x = cons.GUI_SIZE,
+        .y = 0.0,
+        .width = cons.GRID_SIZE.x * cons.CELL_SIZE,
+        .height = cons.GRID_SIZE.y * cons.CELL_SIZE,
+    };
+
+    const src = rl.Rectangle{
+        .x = 0.0,
+        .y = 0.0,
+        .width = dst.width,
+        .height = dst.height,
+    };
+
+    const origin = rl.Vector2{ .x = 0.0, .y = 0.0 };
+
+    rl.drawTexturePro(
+        ground_texture,
+        src,
+        dst,
+        origin,
+        0.0,
+        .white,
+    );
+
     for (0..cons.GRID_SIZE.y) |y| {
         for (0..cons.GRID_SIZE.x) |x| {
-            const pos = types.Vec2{
-                .x = cons.GUI_SIZE + cons.CELL_SIZE * @as(i32, @intCast(x)),
-                .y = cons.CELL_SIZE * @as(i32, @intCast(y)),
-            };
+            const cell = self.cell_grid[y][x];
+            const active_tag = cell.tag;
 
-            rl.drawTexture(
-                self.textures.get(self.cell_grid[y][x].texture) orelse @panic("HashMap doesn't contain this key!"),
-                pos.x,
-                pos.y,
-                rl.Color.white,
-            );
+            switch (active_tag) {
+                .ground => {},
+                .wall, .death_wall, .barrel => {
+                    funcs.drawGridTexture(self.textures.get(active_tag), .{ .x = @intCast(x), .y = @intCast(y) });
+                },
+                .explosion_1, .explosion_2 => {
+                    const texture = self.team_textures.get(cell.variant.explosion_1.team).explosion_textures[@intFromBool(cell.variant.explosion_1.variant == .crossed)];
+
+                    if (cell.variant.explosion_1.variant == .vertical) {
+                        const pos = b2.b2Vec2{
+                            .x = @floatFromInt(cons.GUI_SIZE + cons.CELL_SIZE * x + cons.CELL_SIZE / 2),
+                            .y = @floatFromInt(cons.CELL_SIZE * y + cons.CELL_SIZE / 2),
+                        };
+
+                        funcs.drawCenteredTexture(texture, pos, 90);
+                    } else {
+                        funcs.drawGridTexture(texture, .{ .x = @intCast(x), .y = @intCast(y) });
+                    }
+                },
+                .dynamite_1, .dynamite_2 => {
+                    const texture = self.team_textures.get(cell.variant.dynamite_1.team).dynamite_textures[@intFromBool(active_tag == .dynamite_2)];
+
+                    funcs.drawGridTexture(texture, .{ .x = @intCast(x), .y = @intCast(y) });
+                },
+                else => unreachable,
+            }
+        }
+    }
+}
+
+fn hurtPlayersInsideExplosion(self: *@This()) void {
+    var player_grid_positions: std.enums.EnumArray(types.Team, types.Vec2) = undefined;
+    var iterator = self.opt_players.iterator();
+
+    while (iterator.next()) |opt_player| if (opt_player.value.*) |*player| {
+        player_grid_positions.set(opt_player.key, funcs.gridPositionFromPixelPosition2(b2.b2Body_GetPosition(player.body_id)));
+    };
+}
+
+fn updateDynamitesAndExplosions(self: *@This()) void {
+    for (0..cons.GRID_SIZE.y) |y| {
+        for (0..cons.GRID_SIZE.x) |x| {
+            var cell = &self.cell_grid[y][x];
+            const active_tag = cell.tag;
+
+            switch (active_tag) {
+                .dynamite_2 => {
+                    if (cell.variant.dynamite_1.timer > 0) {
+                        cell.variant.dynamite_1.update();
+                        break;
+                    }
+
+                    for (cons.DIRECTIONS, 0..) |dir, i| {
+                        D: for (1..cell.variant.dynamite_1.radius) |offset| {
+                            const grid_pos = types.Vec2{
+                                .x = @as(i32, @intCast(x)) + dir.x * @as(i32, @intCast(offset)),
+                                .y = @as(i32, @intCast(y)) + dir.y * @as(i32, @intCast(offset)),
+                            };
+
+                            var cell_in_radius = &self.cell_grid[@intCast(grid_pos.y)][@intCast(grid_pos.x)];
+                            const cell_in_radius_active_tag = cell_in_radius.tag;
+
+                            switch (cell_in_radius_active_tag) {
+                                .wall, .death_wall, .explosion_2 => break,
+                                .dynamite_1, .dynamite_2 => {
+                                    cell_in_radius.variant.dynamite_1.timer = 0;
+
+                                    break;
+                                },
+                                .ground, .barrel, .explosion_1 => {
+                                    defer cell_in_radius.* = .initExplosion(
+                                        cell.variant.dynamite_1.team,
+                                        O: {
+                                            const variant: types.ExplosionVariant = if (i < 2) .horizontal else .vertical;
+                                            if (cell_in_radius_active_tag == .explosion_1 and cell_in_radius.variant.explosion_1.team == cell.variant.dynamite_1.team and cell_in_radius.variant.explosion_1.variant != variant)
+                                                break :O .crossed;
+
+                                            break :O variant;
+                                        },
+                                    );
+
+                                    if (cell_in_radius_active_tag == .barrel) {
+                                        b2.b2DestroyBody(cell_in_radius.variant.barrel.body_id);
+                                        break :D;
+                                    }
+                                },
+                                else => unreachable,
+                            }
+                        }
+                    }
+
+                    cell.* = .initExplosion(cell.variant.dynamite_1.team, .crossed);
+                },
+                .dynamite_1 => {
+                    cell.variant.dynamite_1.update();
+                    if (cell.variant.dynamite_1.timer < 1) cell.tag = .dynamite_2;
+                },
+                else => continue,
+            }
+        }
+    }
+}
+
+fn decayExplosions(self: *@This()) void {
+    for (0..cons.GRID_SIZE.y) |y| {
+        for (0..cons.GRID_SIZE.x) |x| {
+            var cell = &self.cell_grid[y][x];
+
+            if (cell.tag == .explosion_1 or cell.tag == .explosion_2) {
+                cell.variant.explosion_1.timer -= cons.PHYSICS_TIMESTEP;
+
+                if (cell.variant.explosion_1.timer < 0) cell.* = .initGround();
+            }
         }
     }
 }
 
 // TODO: Refactor into smaller functions
 fn handleExplosions(self: *@This()) void {
-    for (&self.optional_players) |*optional_player| if (optional_player.*) |*player| {
-        for (&player.optional_dynamites) |*optional_dynamite| if (optional_dynamite.*) |*dynamite| {
+    for (&self.opt_players.values) |*opt_player| if (opt_player.*) |*player| {
+        for (&player.opt_dynamites) |*opt_dynamite| if (opt_dynamite.*) |*dynamite| {
             if (dynamite.timer > 0) {
                 if (dynamite.state == .exploding) {
                     const grid_position = funcs.gridPositionFromPixelPosition(dynamite.position);
 
-                    D: for (&self.optional_players) |*optional_player_2| if (optional_player_2.*) |*player_2| {
+                    D: for (&self.opt_players) |*opt_player_2| if (opt_player_2.*) |*player_2| {
                         const player_2_position = b2.b2Body_GetPosition(player_2.body_id);
                         const player_2_grid_position = types.Vec2{
                             .x = @divFloor(@as(i32, @intFromFloat(player_2_position.x - cons.GUI_SIZE)), cons.CELL_SIZE),
@@ -309,7 +410,7 @@ fn handleExplosions(self: *@This()) void {
                         for (1..dynamite.radius) |offset| {
                             const cell_position = grid_position.add(dir.mul_scalar(@intCast(offset)));
 
-                            D: for (&self.optional_players) |*optional_player_2| if (optional_player_2.*) |*player_2| {
+                            D: for (&self.opt_players) |*opt_player_2| if (opt_player_2.*) |*player_2| {
                                 const player_2_position = b2.b2Body_GetPosition(player_2.body_id);
                                 const player_2_grid_position = types.Vec2{
                                     .x = @divFloor(@as(i32, @intFromFloat(player_2_position.x - cons.GUI_SIZE)), cons.CELL_SIZE),
@@ -354,8 +455,8 @@ fn handleExplosions(self: *@This()) void {
 
                                     break;
                                 } else {
-                                    D: for (&self.optional_players) |*optional_player_2| if (optional_player_2.*) |*player_2| {
-                                        for (&player_2.optional_dynamites) |*optional_dynamite_2| if (optional_dynamite_2.*) |*dynamite_2| {
+                                    D: for (&self.opt_players) |*opt_player_2| if (opt_player_2.*) |*player_2| {
+                                        for (&player_2.opt_dynamites) |*opt_dynamite_2| if (opt_dynamite_2.*) |*dynamite_2| {
                                             if (funcs.gridPositionFromPixelPosition(dynamite_2.position).eql(cell_position)) {
                                                 dynamite_2.timer = 0;
 
@@ -381,7 +482,7 @@ fn handleExplosions(self: *@This()) void {
                         }
                     }
 
-                    optional_dynamite.* = null;
+                    opt_dynamite.* = null;
                 }
 
                 dynamite.switchState();

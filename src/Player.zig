@@ -6,87 +6,36 @@ const b2 = @cImport({
 
 const types = @import("types.zig");
 const cons = @import("constants.zig");
+const funcs = @import("functions.zig");
 const Game = @import("Game.zig");
 
-const Action = struct {
+pub const Action = struct {
     binded_key: rl.KeyboardKey,
     cached_input: bool = false,
 };
 
-const PlayerActions = struct {
-    left: Action,
-    right: Action,
-    up: Action,
-    down: Action,
-    throw_dynamite: Action,
-};
-
-const Dynamite = struct {
-    position: b2.b2Vec2,
-    radius: u8,
-    team_color: types.TeamColor,
-    state: enum(u8) {
-        idle,
-        exploding,
-        exploded,
-    },
-    timer: f32,
-
-    pub fn init(aligned_position: b2.b2Vec2, team_color: types.TeamColor) @This() {
-        return .{
-            .position = aligned_position,
-            .radius = 4,
-            .team_color = team_color,
-            .state = .idle,
-            .timer = 3,
-        };
-    }
-
-    pub fn update(self: *@This()) void {
-        self.timer -= cons.PHYSICS_TIMESTEP;
-    }
-
-    pub fn draw(self: @This(), textures: types.TextureHashMap) void {
-        if (self.state == .idle) {
-            rl.drawTexture(
-                textures.get(.dynamite(self.team_color)) orelse @panic("HashMap doesn't contain this key!"),
-                @intFromFloat(self.position.x - cons.CELL_SIZE / 2),
-                @intFromFloat(self.position.y - cons.CELL_SIZE / 2),
-                rl.Color.white,
-            );
-        }
-    }
-
-    pub fn switchState(self: *@This()) void {
-        switch (self.state) {
-            .idle => {
-                self.state = .exploding;
-                self.timer = cons.EXPLOSION_DURATION;
-            },
-            .exploding => {
-                self.state = .exploded;
-            },
-            .exploded => unreachable,
-        }
-    }
+pub const ActionVariant = enum {
+    left,
+    right,
+    up,
+    down,
+    place_dynamite,
 };
 
 health: u8,
 invincibility_timer: f32,
 speed: f32,
 old_position: b2.b2Vec2,
-team_color: types.TeamColor,
 body_id: b2.b2BodyId,
-optional_dynamites: [cons.MAX_DYNAMITE_COUNT]?Dynamite,
-actions: PlayerActions,
+actions: std.enums.EnumArray(ActionVariant, Action),
+textures: *const types.TeamTextures,
 
-pub fn init(position: b2.b2Vec2, world_id: b2.b2WorldId, team_color: types.TeamColor, key_bindings: [@typeInfo(PlayerActions).@"struct".fields.len]rl.KeyboardKey) @This() {
+pub fn init(position: b2.b2Vec2, world_id: b2.b2WorldId, key_bindings: std.enums.EnumArray(ActionVariant, rl.KeyboardKey), textures: *const types.TeamTextures) @This() {
     return .{
         .health = 3,
         .invincibility_timer = 0,
         .speed = cons.CELL_SIZE * 5,
         .old_position = position,
-        .team_color = team_color,
         .body_id = D: {
             var body_def = b2.b2DefaultBodyDef();
             body_def.position = position;
@@ -100,58 +49,41 @@ pub fn init(position: b2.b2Vec2, world_id: b2.b2WorldId, team_color: types.TeamC
 
             break :D body_id;
         },
-        .optional_dynamites = .{null} ** cons.MAX_DYNAMITE_COUNT,
-        .actions = .{
-            .left = .{ .binded_key = key_bindings[0] },
-            .right = .{ .binded_key = key_bindings[1] },
-            .up = .{ .binded_key = key_bindings[2] },
-            .down = .{ .binded_key = key_bindings[3] },
-            .throw_dynamite = .{ .binded_key = key_bindings[4] },
-        },
+        .actions = .init(std.enums.EnumFieldStruct(ActionVariant, Action, null){
+            .left = .{ .binded_key = key_bindings.get(.left) },
+            .right = .{ .binded_key = key_bindings.get(.right) },
+            .up = .{ .binded_key = key_bindings.get(.up) },
+            .down = .{ .binded_key = key_bindings.get(.down) },
+            .place_dynamite = .{ .binded_key = key_bindings.get(.place_dynamite) },
+        }),
+        .textures = textures,
     };
 }
 
 pub fn update(self: *@This()) void {
     // Keys that are held down
-    inline for (@typeInfo(@TypeOf(self.actions)).@"struct".fields[0..4]) |field| {
-        @field(self.actions, field.name).cached_input = rl.isKeyDown(@field(self.actions, field.name).binded_key);
-    }
-
-    // Keys that are pressed (+ sticky)
-    inline for (@typeInfo(@TypeOf(self.actions)).@"struct".fields[4..]) |field| {
-        if (!@field(self.actions, field.name).cached_input) {
-            @field(self.actions, field.name).cached_input = rl.isKeyPressed(@field(self.actions, field.name).binded_key);
-        }
-    }
+    for (self.actions.values[0..4]) |*action| action.cached_input = rl.isKeyDown(action.binded_key);
+    for (self.actions.values[4..]) |*action| if (!action.cached_input) {
+        action.cached_input = rl.isKeyPressed(action.binded_key);
+    };
 
     self.old_position = b2.b2Body_GetPosition(self.body_id);
 }
 
 pub fn fixedUpdate(self: *@This()) void {
-    self.updateDynamites();
-
     self.invincibility_timer -= cons.PHYSICS_TIMESTEP;
 
     handleMovement(self.body_id, self.speed, self.actions);
-
-    if (self.actions.throw_dynamite.cached_input) self.throwDynamite();
 }
 
-pub fn draw(self: *@This(), textures: types.TextureHashMap, alpha: f32) void {
-    self.drawDynamites(textures);
-
+pub fn draw(self: *@This(), alpha: f32) void {
     const position = b2.b2Body_GetPosition(self.body_id);
     const draw_position = b2.b2Vec2{
         .x = self.old_position.x * (1 - alpha) + position.x * alpha,
         .y = self.old_position.y * (1 - alpha) + position.y * alpha,
     };
 
-    rl.drawTexture(
-        textures.get(.player(self.team_color)) orelse @panic("HashMap doesn't contain this key!"),
-        @intFromFloat(draw_position.x - cons.CELL_SIZE / 2),
-        @intFromFloat(draw_position.y - cons.CELL_SIZE / 2),
-        rl.Color.white,
-    );
+    funcs.drawCenteredTexture(self.textures.player_textures.down[0], draw_position, 0);
 }
 
 // TODO: Remove '> 0' check
@@ -162,10 +94,10 @@ pub fn hurt(self: *@This()) void {
     }
 }
 
-fn handleMovement(body_id: b2.b2BodyId, speed: f32, actions: PlayerActions) void {
+fn handleMovement(body_id: b2.b2BodyId, speed: f32, actions: std.enums.EnumArray(ActionVariant, Action)) void {
     var input_vector = b2.b2Vec2{
-        .x = @floatFromInt(@as(i2, @intFromBool(actions.right.cached_input)) - @as(i2, @intFromBool(actions.left.cached_input))),
-        .y = @floatFromInt(@as(i2, @intFromBool(actions.down.cached_input)) - @as(i2, @intFromBool(actions.up.cached_input))),
+        .x = @floatFromInt(@as(i2, @intFromBool(actions.get(.right).cached_input)) - @as(i2, @intFromBool(actions.get(.left).cached_input))),
+        .y = @floatFromInt(@as(i2, @intFromBool(actions.get(.down).cached_input)) - @as(i2, @intFromBool(actions.get(.up).cached_input))),
     };
 
     const position = b2.b2Body_GetPosition(body_id);
@@ -190,37 +122,4 @@ fn handleMovement(body_id: b2.b2BodyId, speed: f32, actions: PlayerActions) void
     }
 
     b2.b2Body_SetLinearVelocity(body_id, b2.b2MulSV(speed, input_vector));
-}
-
-fn throwDynamite(self: *@This()) void {
-    self.actions.throw_dynamite.cached_input = false;
-
-    const position = b2.b2Body_GetPosition(self.body_id);
-    const aligned_position = b2.b2Vec2{
-        .x = @divTrunc(position.x, cons.CELL_SIZE) * cons.CELL_SIZE + cons.CELL_SIZE / 2,
-        .y = @divTrunc(position.y, cons.CELL_SIZE) * cons.CELL_SIZE + cons.CELL_SIZE / 2,
-    };
-
-    // This still allows multiple dynamites to be placed in single cell, but unlikely to happen
-    for (&self.optional_dynamites) |*dynamite_slot| {
-        if (dynamite_slot.*) |dynamite| {
-            if (dynamite.position.x == aligned_position.x and dynamite.position.y == aligned_position.y) break;
-        } else {
-            dynamite_slot.* = Dynamite.init(aligned_position, self.team_color);
-
-            return;
-        }
-    }
-}
-
-fn updateDynamites(self: *@This()) void {
-    for (&self.optional_dynamites) |*optinal_dynamite| if (optinal_dynamite.*) |*dynamite| {
-        dynamite.update();
-    };
-}
-
-fn drawDynamites(self: *@This(), textures: types.TextureHashMap) void {
-    for (&self.optional_dynamites) |*optinal_dynamite| if (optinal_dynamite.*) |*dynamite| {
-        dynamite.draw(textures);
-    };
 }
