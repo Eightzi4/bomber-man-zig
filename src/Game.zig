@@ -12,24 +12,53 @@ const Data = @import("Data.zig");
 
 world_id: b2.b2WorldId,
 cell_grid: [cons.GRID_SIZE.y][cons.GRID_SIZE.x]types.Cell,
-explosion_grid: [cons.GRID_SIZE.y][cons.GRID_SIZE.x]?types.ExplosionVariant,
 team_textures: std.enums.EnumArray(types.Team, types.TeamTextures),
 opt_players: std.enums.EnumArray(types.Team, ?Player),
 accumulator: f32,
 textures: *const std.enums.EnumArray(types.Texture, rl.Texture2D),
+cell_size: *const f32,
+data: *Data,
 
 pub fn init(data: *Data) @This() {
-    const world_id = b2.b2CreateWorld(&b2.b2DefaultWorldDef());
+    var world_def = b2.b2DefaultWorldDef();
+    world_def.gravity = b2.b2Vec2{ .x = 0.0, .y = 0.0 };
+
+    const world_id = b2.b2CreateWorld(&world_def);
 
     return .{
         .world_id = world_id,
-        .cell_grid = generateCellGrid(data.rand_gen, world_id),
-        .explosion_grid = @splat(@splat(null)),
+        .cell_grid = generateCellGrid(data.prng.random(), world_id),
         .team_textures = createTeamTextures(data.team_colors, data.textures),
         .opt_players = .initFill(null),
         .accumulator = 0,
         .textures = &data.textures,
+        .cell_size = &data.cell_size,
+        .data = data,
     };
+}
+
+pub fn deinit(self: *@This()) void {
+    b2.b2DestroyWorld(self.world_id);
+
+    for (self.team_textures.values) |team_textures| {
+        for (team_textures.player_textures.side) |texture| {
+            rl.unloadTexture(texture);
+        }
+        for (team_textures.player_textures.up) |texture| {
+            rl.unloadTexture(texture);
+        }
+        for (team_textures.player_textures.down) |texture| {
+            rl.unloadTexture(texture);
+        }
+
+        for (team_textures.dynamite_textures) |texture| {
+            rl.unloadTexture(texture);
+        }
+
+        for (team_textures.explosion_textures) |texture| {
+            rl.unloadTexture(texture);
+        }
+    }
 }
 
 pub fn update(self: *@This()) void {
@@ -43,33 +72,71 @@ pub fn update(self: *@This()) void {
         self.accumulator -= cons.PHYSICS_TIMESTEP;
     }
 
-    for (&self.opt_players.values) |*opt_player| if (opt_player.*) |*player| {
+    for (&self.opt_players.values) |*opt_player| if (opt_player.*) |*player| if (player.health > 0) {
         player.update();
     };
+
+    checkPlayerPositions(self);
 }
 
 fn fixedUpdate(self: *@This()) void {
     var iterator = self.opt_players.iterator();
 
-    while (iterator.next()) |opt_player| if (opt_player.value.*) |*player| {
+    while (iterator.next()) |opt_player| if (opt_player.value.*) |*player| if (player.health > 0) {
         player.fixedUpdate();
 
-        if (player.actions.get(.place_dynamite).cached_input) {
-            const position = b2.b2Body_GetPosition(player.body_id);
-            const aligned_position = b2.b2Vec2{
-                .x = @divTrunc(position.x, cons.CELL_SIZE) * cons.CELL_SIZE + cons.CELL_SIZE / 2,
-                .y = @divTrunc(position.y, cons.CELL_SIZE) * cons.CELL_SIZE + cons.CELL_SIZE / 2,
-            };
-            const grid_position = funcs.gridPositionFromPixelPosition(aligned_position);
-            self.cell_grid[@intCast(grid_position.y)][@intCast(grid_position.x)] = .initDynamite(opt_player.key);
-            player.actions.getPtr(.place_dynamite).cached_input = false;
+        var movement_iterator = player.actions.movement.iterator();
+        while (movement_iterator.next()) |action| {
+            if (rl.isKeyPressed(action.value.binded_key)) {
+                const current_time = @as(f32, @floatCast(rl.getTime()));
+                const time_since_last_press = current_time - action.value.last_pressed;
+
+                if (player.flash_timer <= 0 and time_since_last_press < 0.5) {
+                    const current_pos = b2.b2Body_GetPosition(player.body_id);
+                    const direction_vector = cons.DIRECTIONS[@intFromEnum(action.key)];
+                    const grid_pos = b2.b2Vec2{
+                        .x = @round((current_pos.x + @as(f32, @floatFromInt(direction_vector.x * 2 * cons.PHYSICS_UNIT))) / cons.PHYSICS_UNIT),
+                        .y = @round((current_pos.y + @as(f32, @floatFromInt(direction_vector.y * 2 * cons.PHYSICS_UNIT))) / cons.PHYSICS_UNIT),
+                    };
+
+                    if (grid_pos.x >= 0 and grid_pos.x < cons.GRID_SIZE.x and grid_pos.y >= 0 and grid_pos.y < cons.GRID_SIZE.y) {
+                        const dest_cell = self.cell_grid[@intFromFloat(grid_pos.y)][@intFromFloat(grid_pos.x)];
+
+                        if (dest_cell.tag != .wall and dest_cell.tag != .death_wall and dest_cell.tag != .barrel) {
+                            b2.b2Body_SetTransform(player.body_id, .{ .x = grid_pos.x * cons.PHYSICS_UNIT, .y = grid_pos.y * cons.PHYSICS_UNIT }, .{ .c = 1, .s = 0 });
+
+                            player.flash_timer = cons.FLASH_COOLDOWN;
+                        }
+                    }
+
+                    action.value.last_pressed = -1.0;
+                } else {
+                    action.value.last_pressed = current_time;
+                }
+            }
+        }
+
+        if (player.actions.place_dynamite.cached_input) {
+            player.actions.place_dynamite.cached_input = false;
+            if (player.dynamite_count > 0) {
+                const position = b2.b2Body_GetPosition(player.body_id);
+                const grid_pos = types.Vec2(usize){
+                    .x = @intFromFloat(@round(position.x / cons.PHYSICS_UNIT)),
+                    .y = @intFromFloat(@round(position.y / cons.PHYSICS_UNIT)),
+                };
+
+                const cell = &self.cell_grid[grid_pos.y][grid_pos.x];
+
+                if (cell.tag != .dynamite_1 and cell.tag != .dynamite_2) {
+                    cell.* = .initDynamite(opt_player.key, player.explosion_radius);
+                    player.dynamite_count -= 1;
+                }
+            }
         }
     };
 
-    //handleExplosions(self);
     decayExplosions(self);
     updateDynamitesAndExplosions(self);
-
     b2.b2World_Step(self.world_id, cons.PHYSICS_TIMESTEP, cons.PHYSICS_SUBSTEP_COUNT);
 }
 
@@ -77,75 +144,122 @@ pub fn draw(self: *@This()) void {
     rl.beginDrawing();
     defer rl.endDrawing();
 
+    rl.clearBackground(.gray);
+
     self.drawBackground();
 
     const alpha = self.accumulator / cons.PHYSICS_TIMESTEP;
 
-    for (&self.opt_players.values) |*opt_player| if (opt_player.*) |*player| {
-        player.draw(alpha);
+    for (&self.opt_players.values) |*opt_player| if (opt_player.*) |*player| if (player.health > 0) {
+        player.draw(alpha, self.cell_size.*);
     };
 
-    //drawGui(self);
+    drawGui(self);
 }
 
 fn drawGui(self: *@This()) void {
-    const padding = cons.GUI_SIZE / 20;
-    const player_gui_size = types.Vec2{ .x = cons.GUI_SIZE - padding * 2, .y = (cons.WINDOW_SIZE.y - cons.GUI_SIZE / 2) / 4 - padding * 2 };
-    const name = "negr bagr";
+    const cell_size = self.cell_size.*;
+    const gui_pixel_width = cons.GUI_SIZE * cell_size;
+    const padding = gui_pixel_width / 20.0;
+    const window_height = cell_size * cons.GRID_SIZE.y;
+    const card_height = window_height / 4.0;
 
-    rl.drawRectangle(0, 0, cons.GUI_SIZE, cons.WINDOW_SIZE.y, .gray);
+    const player_gui_size = types.Vec2(i32){
+        .x = @intFromFloat(gui_pixel_width - padding * 2.0),
+        .y = @intFromFloat(card_height - padding * 2.0),
+    };
 
-    for (&self.opt_players.values, 0..) |*opt_player, i| if (opt_player.*) |player| {
-        const position = types.Vec2{ .x = padding, .y = padding + (player_gui_size.y + padding) * @as(i32, @intCast(i)) };
+    rl.drawRectangle(0, 0, @intFromFloat(gui_pixel_width), @intFromFloat(window_height), .gray);
 
-        // Background
+    const esc_text = "Press ESC to exit";
+    const esc_font_size: i32 = @as(i32, @intFromFloat(@max(10.0, cell_size * 0.4)));
+    const esc_text_width = rl.measureText(esc_text, esc_font_size);
+    const esc_pos_x = @as(i32, @intFromFloat(gui_pixel_width / 2.0)) - @divTrunc(esc_text_width, 2);
+    const esc_pos_y = @as(i32, @intFromFloat(window_height - padding - @as(f32, @floatFromInt(esc_font_size))));
+    rl.drawText(esc_text, esc_pos_x, esc_pos_y, esc_font_size, .light_gray);
+
+    var iterator = self.opt_players.iterator();
+    while (iterator.next()) |opt_player| if (opt_player.value.*) |*player| {
+        const team = opt_player.key;
+
+        const card_pos = types.Vec2(i32){
+            .x = @intFromFloat(padding),
+            .y = @intFromFloat(padding + (card_height * @as(f32, @floatFromInt(iterator.index - 1)))),
+        };
+
+        const card_bg_color = if (player.health > 0) self.data.team_colors.get(team) else rl.Color.dark_gray;
+
         funcs.drawRectangleWithOutline(
-            .{ .x = position.x, .y = position.y },
-            player_gui_size,
-            .blue,
-            cons.CELL_SIZE / 20,
+            .{ .x = @floatFromInt(card_pos.x), .y = @floatFromInt(card_pos.y) },
+            .{ .x = @floatFromInt(player_gui_size.x), .y = @floatFromInt(player_gui_size.y) },
+            card_bg_color,
+            cell_size / 20.0,
             .black,
         );
 
-        // Player icon
-        const player_texture = self.textures.get(.player(player.team_color)) orelse @panic("Missing player texture");
+        const player_texture = self.team_textures.get(team).player_textures.down[0];
+        const icon_size = @as(f32, @floatFromInt(player_gui_size.y)) * 0.5;
+        const icon_dest_rect = rl.Rectangle{
+            .x = @as(f32, @floatFromInt(card_pos.x)) + padding,
+            .y = @as(f32, @floatFromInt(card_pos.y)) + padding,
+            .width = icon_size,
+            .height = icon_size,
+        };
+        rl.drawCircleV(.{ .x = icon_dest_rect.x + icon_size / 2.0, .y = icon_dest_rect.y + icon_size / 2.0 }, icon_size / 2.0 + 2.0, .white);
+        rl.drawTexturePro(player_texture, .{ .x = 0, .y = 0, .width = @floatFromInt(player_texture.width), .height = @floatFromInt(player_texture.height) }, icon_dest_rect, .{ .x = 0, .y = 0 }, 0.0, .white);
 
-        rl.drawTexture(player_texture, position.x + padding, position.y + padding, .white);
+        const text_area_x = @as(i32, @intFromFloat(icon_dest_rect.x + icon_dest_rect.width + padding));
+        const text_area_width = card_pos.x + player_gui_size.x - @as(i32, @intFromFloat(padding)) - text_area_x;
 
-        // Player name
-        var text_size: i32 = cons.CELL_SIZE;
-        var text_width = rl.measureText(name, text_size);
+        const name = @tagName(opt_player.key);
+        var name_font_size = @as(i32, @intFromFloat(@max(12.0, cell_size * 0.5)));
+        while (rl.measureText(name, name_font_size) > text_area_width and name_font_size > 8) {
+            name_font_size -= 1;
+        }
+        const name_pos_y = @as(i32, @intFromFloat(icon_dest_rect.y));
+        rl.drawText(name, text_area_x, name_pos_y, name_font_size, .black);
 
-        while (text_width > cons.CELL_SIZE * 2 and text_size > 1) : (text_size -= 1) text_width = rl.measureText(name, text_size);
+        const score_text = "Score: 9999";
+        const score_font_size = @as(i32, @intFromFloat(@max(10.0, cell_size * 0.4)));
+        const score_pos_y = name_pos_y + name_font_size + @as(i32, @intFromFloat(padding * 0.5));
+        rl.drawText(score_text, text_area_x, score_pos_y, score_font_size, .light_gray);
 
-        rl.drawText(name, padding * 3 + player_texture.width, position.y + padding, text_size, .black);
+        const stats_area_y = icon_dest_rect.y + icon_dest_rect.height + padding / 2;
+        const stats_available_width = @as(f32, @floatFromInt(player_gui_size.x));
 
-        // Health
-        for (0..cons.MAX_HEALTH) |j| {
-            if (j < player.health) {
-                rl.drawCircle(
-                    padding * 3 + player_texture.width + cons.CELL_SIZE / 4 + @divTrunc(player_gui_size.x - padding * 2 - player_texture.width, 3) * @as(i32, @intCast(j)),
-                    position.y + player_texture.height - padding * 2 + cons.CELL_SIZE / 4,
-                    cons.CELL_SIZE / 4,
-                    if (player.invincibility_timer > 0) .gray else .red,
-                );
-            } else {
-                rl.drawLine(
-                    padding * 3 + player_texture.width + @divTrunc(player_gui_size.x - padding * 2 - player_texture.width, 3) * @as(i32, @intCast(j)),
-                    position.y + player_texture.height - padding * 2,
-                    padding * 3 + player_texture.width + cons.CELL_SIZE / 2 + @divTrunc(player_gui_size.x - padding * 2 - player_texture.width, 3) * @as(i32, @intCast(j)),
-                    position.y + player_texture.height - padding * 2 + cons.CELL_SIZE / 2,
-                    .black,
-                );
+        // --- Health Bar (Top Row) ---
+        const hearth_texture = self.textures.get(.hearth);
+        const heart_icon_size = cell_size * 0.4;
+        const heart_spacing = heart_icon_size * 0.15;
+        const num_heart_spaces = @max(0, @as(i32, @intCast(player.health)) - 1);
+        const total_hearts_width = @as(f32, @floatFromInt(player.health)) * heart_icon_size + @as(f32, @floatFromInt(num_heart_spaces)) * heart_spacing;
+        const hearts_start_x = @as(f32, @floatFromInt(card_pos.x)) + (stats_available_width - total_hearts_width) / 2.0;
 
-                rl.drawLine(
-                    padding * 3 + player_texture.width + @divTrunc(player_gui_size.x - padding * 2 - player_texture.width, 3) * @as(i32, @intCast(j)),
-                    position.y + player_texture.height - padding * 2 + cons.CELL_SIZE / 2,
-                    padding * 3 + player_texture.width + cons.CELL_SIZE / 2 + @divTrunc(player_gui_size.x - padding * 2 - player_texture.width, 3) * @as(i32, @intCast(j)),
-                    position.y + player_texture.height - padding * 2,
-                    .black,
-                );
-            }
+        for (0..player.health) |j| {
+            const heart_pos = rl.Vector2{
+                .x = hearts_start_x + (@as(f32, @floatFromInt(j)) * (heart_icon_size + heart_spacing)),
+                .y = stats_area_y,
+            };
+            rl.drawCircleV(.{ .x = heart_pos.x + heart_icon_size / 2.0, .y = heart_pos.y + heart_icon_size / 2.0 }, heart_icon_size / 2.0 + 1.0, .white);
+            rl.drawTextureEx(hearth_texture, heart_pos, 0.0, heart_icon_size / @as(f32, @floatFromInt(hearth_texture.width)), .white);
+        }
+
+        // --- Dynamite Bar (Bottom Row) ---
+        const dynamite_texture = self.team_textures.get(team).dynamite_textures[0];
+        const dynamites_y = stats_area_y + heart_icon_size + padding * 0.5;
+        const dynamite_icon_size = cell_size * 0.35;
+        const dynamite_spacing = dynamite_icon_size * 0.15;
+        const num_dynamite_spaces = @max(0, @as(i32, @intCast(player.dynamite_count)) - 1);
+        const total_dynamites_width = @as(f32, @floatFromInt(player.dynamite_count)) * dynamite_icon_size + @as(f32, @floatFromInt(num_dynamite_spaces)) * dynamite_spacing;
+        const dynamites_start_x = @as(f32, @floatFromInt(card_pos.x)) + (stats_available_width - total_dynamites_width) / 2.0;
+
+        for (0..player.dynamite_count) |j| {
+            const dynamite_pos = rl.Vector2{
+                .x = dynamites_start_x + (@as(f32, @floatFromInt(j)) * (dynamite_icon_size + dynamite_spacing)),
+                .y = dynamites_y,
+            };
+            rl.drawCircleV(.{ .x = dynamite_pos.x + dynamite_icon_size / 2.0, .y = dynamite_pos.y + dynamite_icon_size / 2.0 }, dynamite_icon_size / 2.0 + 1.0, .white);
+            rl.drawTextureEx(dynamite_texture, dynamite_pos, 0.0, dynamite_icon_size / @as(f32, @floatFromInt(dynamite_texture.width)), .white);
         }
     };
 }
@@ -161,9 +275,7 @@ fn generateCellGrid(random: std.Random, world_id: b2.b2WorldId) [cons.GRID_SIZE.
                 const max_y = cons.GRID_SIZE.y - y - 1;
                 const max_x = cons.GRID_SIZE.x - x - 1;
 
-                if (!(@min(x, max_x) < 4 and @min(y, max_y) < 4 and @min(x, max_x) + @min(y, max_y) < 5) and
-                    (random.boolean() or random.boolean()))
-                {
+                if (!(@min(x, max_x) < 4 and @min(y, max_y) < 4 and @min(x, max_x) + @min(y, max_y) < 5) and (random.boolean() or random.boolean())) {
                     cell.* = .initBarrel(@intCast(x), @intCast(y), world_id);
                 }
             }
@@ -233,15 +345,16 @@ fn applyShaderToTexture(shader: rl.Shader, color: rl.Color, texture: rl.Texture2
 }
 
 fn drawBackground(self: *@This()) void {
+    const cell_size = self.cell_size.*;
     const ground_texture = self.textures.get(.ground);
 
     rl.setTextureWrap(ground_texture, rl.TextureWrap.repeat);
 
     const dst = rl.Rectangle{
-        .x = cons.GUI_SIZE,
+        .x = cons.GUI_SIZE * cell_size,
         .y = 0.0,
-        .width = cons.GRID_SIZE.x * cons.CELL_SIZE,
-        .height = cons.GRID_SIZE.y * cons.CELL_SIZE,
+        .width = cons.GRID_SIZE.x * cell_size,
+        .height = cons.GRID_SIZE.y * cell_size,
     };
 
     const src = rl.Rectangle{
@@ -270,26 +383,28 @@ fn drawBackground(self: *@This()) void {
             switch (active_tag) {
                 .ground => {},
                 .wall, .death_wall, .barrel => {
-                    funcs.drawGridTexture(self.textures.get(active_tag), .{ .x = @intCast(x), .y = @intCast(y) });
+                    funcs.drawGridTexture(self.textures.get(active_tag), .{ .x = @floatFromInt(x), .y = @floatFromInt(y) }, cell_size);
                 },
                 .explosion_1, .explosion_2 => {
                     const texture = self.team_textures.get(cell.variant.explosion_1.team).explosion_textures[@intFromBool(cell.variant.explosion_1.variant == .crossed)];
 
                     if (cell.variant.explosion_1.variant == .vertical) {
-                        const pos = b2.b2Vec2{
-                            .x = @floatFromInt(cons.GUI_SIZE + cons.CELL_SIZE * x + cons.CELL_SIZE / 2),
-                            .y = @floatFromInt(cons.CELL_SIZE * y + cons.CELL_SIZE / 2),
-                        };
+                        const pos = funcs.physPosToScreenPos(.{ .x = @floatFromInt(x * cons.PHYSICS_UNIT), .y = @floatFromInt(y * cons.PHYSICS_UNIT) }, cell_size);
 
-                        funcs.drawCenteredTexture(texture, pos, 90);
+                        funcs.drawCenteredTexture(texture, pos, 90, cell_size);
                     } else {
-                        funcs.drawGridTexture(texture, .{ .x = @intCast(x), .y = @intCast(y) });
+                        funcs.drawGridTexture(texture, .{ .x = @floatFromInt(x), .y = @floatFromInt(y) }, cell_size);
                     }
                 },
                 .dynamite_1, .dynamite_2 => {
                     const texture = self.team_textures.get(cell.variant.dynamite_1.team).dynamite_textures[@intFromBool(active_tag == .dynamite_2)];
 
-                    funcs.drawGridTexture(texture, .{ .x = @intCast(x), .y = @intCast(y) });
+                    funcs.drawGridTexture(texture, .{ .x = @floatFromInt(x), .y = @floatFromInt(y) }, cell_size);
+                },
+                .upgrade_dynamite, .upgrade_heal, .upgrade_radius, .upgrade_speed, .upgrade_teleport => {
+                    const texture = self.textures.get(active_tag);
+
+                    funcs.drawGridTexture(texture, .{ .x = @floatFromInt(x), .y = @floatFromInt(y) }, cell_size);
                 },
                 else => unreachable,
             }
@@ -297,12 +412,38 @@ fn drawBackground(self: *@This()) void {
     }
 }
 
-fn hurtPlayersInsideExplosion(self: *@This()) void {
-    var player_grid_positions: std.enums.EnumArray(types.Team, types.Vec2) = undefined;
+fn checkPlayerPositions(self: *@This()) void {
     var iterator = self.opt_players.iterator();
 
-    while (iterator.next()) |opt_player| if (opt_player.value.*) |*player| {
-        player_grid_positions.set(opt_player.key, funcs.gridPositionFromPixelPosition2(b2.b2Body_GetPosition(player.body_id)));
+    while (iterator.next()) |opt_player| if (opt_player.value.*) |*player| if (player.health > 0) {
+        const pos = b2.b2Body_GetPosition(player.body_id);
+        const cell = &self.cell_grid[@intFromFloat(@round(pos.y / cons.PHYSICS_UNIT))][@intFromFloat(@round(pos.x / cons.PHYSICS_UNIT))];
+
+        switch (cell.tag) {
+            .ground, .dynamite_1, .dynamite_2 => {},
+            .explosion_1, .explosion_2 => player.hurt(),
+            .upgrade_dynamite => {
+                player.dynamite_count += 1;
+                cell.* = .initGround();
+            },
+            .upgrade_heal => {
+                player.heal();
+                cell.* = .initGround();
+            },
+            .upgrade_radius => {
+                player.explosion_radius += 1;
+                cell.* = .initGround();
+            },
+            .upgrade_speed => {
+                player.speed += cons.PHYSICS_UNIT;
+                cell.* = .initGround();
+            },
+            .upgrade_teleport => {
+                player.flash_timer = 0;
+                cell.* = .initGround();
+            },
+            else => unreachable,
+        }
     };
 }
 
@@ -321,44 +462,91 @@ fn updateDynamitesAndExplosions(self: *@This()) void {
 
                     for (cons.DIRECTIONS, 0..) |dir, i| {
                         D: for (1..cell.variant.dynamite_1.radius) |offset| {
-                            const grid_pos = types.Vec2{
-                                .x = @as(i32, @intCast(x)) + dir.x * @as(i32, @intCast(offset)),
-                                .y = @as(i32, @intCast(y)) + dir.y * @as(i32, @intCast(offset)),
+                            const grid_pos = types.Vec2(usize){
+                                .x = @intCast(@as(i32, @intCast(x)) + dir.x * @as(i32, @intCast(offset))),
+                                .y = @intCast(@as(i32, @intCast(y)) + dir.y * @as(i32, @intCast(offset))),
                             };
 
-                            var cell_in_radius = &self.cell_grid[@intCast(grid_pos.y)][@intCast(grid_pos.x)];
+                            var cell_in_radius = &self.cell_grid[grid_pos.y][grid_pos.x];
                             const cell_in_radius_active_tag = cell_in_radius.tag;
 
                             switch (cell_in_radius_active_tag) {
                                 .wall, .death_wall, .explosion_2 => break,
-                                .dynamite_1, .dynamite_2 => {
-                                    cell_in_radius.variant.dynamite_1.timer = 0;
-
-                                    break;
-                                },
-                                .ground, .barrel, .explosion_1 => {
-                                    defer cell_in_radius.* = .initExplosion(
+                                .ground => {
+                                    cell_in_radius.* = .initExplosion(
                                         cell.variant.dynamite_1.team,
                                         O: {
                                             const variant: types.ExplosionVariant = if (i < 2) .horizontal else .vertical;
+
                                             if (cell_in_radius_active_tag == .explosion_1 and cell_in_radius.variant.explosion_1.team == cell.variant.dynamite_1.team and cell_in_radius.variant.explosion_1.variant != variant)
                                                 break :O .crossed;
 
                                             break :O variant;
                                         },
+                                        .none,
+                                    );
+                                },
+                                .explosion_1 => {
+                                    cell_in_radius.* = .initExplosion(
+                                        cell.variant.dynamite_1.team,
+                                        O: {
+                                            const variant: types.ExplosionVariant = if (i < 2) .horizontal else .vertical;
+
+                                            if (cell_in_radius_active_tag == .explosion_1 and cell_in_radius.variant.explosion_1.team == cell.variant.dynamite_1.team and cell_in_radius.variant.explosion_1.variant != variant)
+                                                break :O .crossed;
+
+                                            break :O variant;
+                                        },
+                                        cell_in_radius.variant.explosion_1.upgrade_underneath,
+                                    );
+                                },
+                                .barrel => {
+                                    b2.b2DestroyBody(cell_in_radius.variant.barrel.body_id);
+
+                                    var random = self.data.prng.random();
+
+                                    cell_in_radius.* = .initExplosion(
+                                        cell.variant.dynamite_1.team,
+                                        O: {
+                                            const variant: types.ExplosionVariant = if (i < 2) .horizontal else .vertical;
+
+                                            if (cell_in_radius_active_tag == .explosion_1 and cell_in_radius.variant.explosion_1.team == cell.variant.dynamite_1.team and cell_in_radius.variant.explosion_1.variant != variant)
+                                                break :O .crossed;
+
+                                            break :O variant;
+                                        },
+                                        if (random.boolean()) random.enumValue(types.UpgradeUnderneath) else .none,
                                     );
 
-                                    if (cell_in_radius_active_tag == .barrel) {
-                                        b2.b2DestroyBody(cell_in_radius.variant.barrel.body_id);
-                                        break :D;
-                                    }
+                                    break :D;
+                                },
+                                .dynamite_1, .dynamite_2 => {
+                                    cell_in_radius.variant.dynamite_1.timer = 0;
+
+                                    break;
+                                },
+                                .upgrade_dynamite, .upgrade_heal, .upgrade_radius, .upgrade_speed, .upgrade_teleport => {
+                                    cell_in_radius.* = .initExplosion(
+                                        cell.variant.dynamite_1.team,
+                                        O: {
+                                            const variant: types.ExplosionVariant = if (i < 2) .horizontal else .vertical;
+
+                                            if (cell_in_radius_active_tag == .explosion_1 and cell_in_radius.variant.explosion_1.team == cell.variant.dynamite_1.team and cell_in_radius.variant.explosion_1.variant != variant)
+                                                break :O .crossed;
+
+                                            break :O variant;
+                                        },
+                                        @enumFromInt(@intFromEnum(cell_in_radius_active_tag) - @intFromEnum(types.Texture.upgrade_dynamite)),
+                                    );
                                 },
                                 else => unreachable,
                             }
                         }
                     }
 
-                    cell.* = .initExplosion(cell.variant.dynamite_1.team, .crossed);
+                    if (self.opt_players.getPtr(cell.variant.dynamite_1.team).*) |*player| player.dynamite_count += 1;
+
+                    cell.* = .initExplosion(cell.variant.dynamite_1.team, .crossed, .none);
                 },
                 .dynamite_1 => {
                     cell.variant.dynamite_1.update();
@@ -378,115 +566,12 @@ fn decayExplosions(self: *@This()) void {
             if (cell.tag == .explosion_1 or cell.tag == .explosion_2) {
                 cell.variant.explosion_1.timer -= cons.PHYSICS_TIMESTEP;
 
-                if (cell.variant.explosion_1.timer < 0) cell.* = .initGround();
+                if (cell.variant.explosion_1.timer < 0) {
+                    if (cell.variant.explosion_1.upgrade_underneath != .none) {
+                        cell.* = .initUpgrade(cell.variant.explosion_1.upgrade_underneath);
+                    } else cell.* = .initGround();
+                }
             }
         }
     }
-}
-
-// TODO: Refactor into smaller functions
-fn handleExplosions(self: *@This()) void {
-    for (&self.opt_players.values) |*opt_player| if (opt_player.*) |*player| {
-        for (&player.opt_dynamites) |*opt_dynamite| if (opt_dynamite.*) |*dynamite| {
-            if (dynamite.timer > 0) {
-                if (dynamite.state == .exploding) {
-                    const grid_position = funcs.gridPositionFromPixelPosition(dynamite.position);
-
-                    D: for (&self.opt_players) |*opt_player_2| if (opt_player_2.*) |*player_2| {
-                        const player_2_position = b2.b2Body_GetPosition(player_2.body_id);
-                        const player_2_grid_position = types.Vec2{
-                            .x = @divFloor(@as(i32, @intFromFloat(player_2_position.x - cons.GUI_SIZE)), cons.CELL_SIZE),
-                            .y = @divFloor(@as(i32, @intFromFloat(player_2_position.y)), cons.CELL_SIZE),
-                        };
-
-                        if (player_2_grid_position.x == grid_position.x and player_2_grid_position.y == grid_position.y) {
-                            player_2.hurt();
-
-                            break :D;
-                        }
-                    };
-
-                    for (cons.DIRECTIONS) |dir| {
-                        for (1..dynamite.radius) |offset| {
-                            const cell_position = grid_position.add(dir.mul_scalar(@intCast(offset)));
-
-                            D: for (&self.opt_players) |*opt_player_2| if (opt_player_2.*) |*player_2| {
-                                const player_2_position = b2.b2Body_GetPosition(player_2.body_id);
-                                const player_2_grid_position = types.Vec2{
-                                    .x = @divFloor(@as(i32, @intFromFloat(player_2_position.x - cons.GUI_SIZE)), cons.CELL_SIZE),
-                                    .y = @divFloor(@as(i32, @intFromFloat(player_2_position.y)), cons.CELL_SIZE),
-                                };
-
-                                if (player_2_grid_position.x == cell_position.x and player_2_grid_position.y == cell_position.y) {
-                                    player_2.hurt();
-
-                                    break :D;
-                                }
-                            };
-                        }
-                    }
-                }
-            } else {
-                const grid_position = funcs.gridPositionFromPixelPosition(dynamite.position);
-
-                if (dynamite.state == .idle) {
-                    self.cell_grid[@intCast(grid_position.y)][@intCast(grid_position.x)].texture = .explosion(dynamite.team_color, .crossed);
-
-                    for (cons.DIRECTIONS, 0..) |dir, i| {
-                        for (1..dynamite.radius) |offset| {
-                            const cell_position = grid_position.add(dir.mul_scalar(@intCast(offset)));
-
-                            var cell = &self.cell_grid[@intCast(cell_position.y)][@intCast(cell_position.x)];
-                            if (cell.texture.tag != .wall and !(cell.texture.tag == .explosion and cell.texture.data.explosion.variant == .crossed)) {
-                                cell.texture = .explosion(
-                                    dynamite.team_color,
-                                    D: {
-                                        const variant: types.ExplosionVariant = if (i < 2) .horizontal else .vertical;
-                                        if (cell.texture.tag == .explosion and cell.texture.data.explosion.team_color == dynamite.team_color and cell.texture.data.explosion.variant != variant)
-                                            break :D .crossed;
-
-                                        break :D variant;
-                                    },
-                                );
-
-                                if (cell.body_id) |body_id| {
-                                    b2.b2DestroyBody(body_id);
-                                    cell.body_id = null;
-
-                                    break;
-                                } else {
-                                    D: for (&self.opt_players) |*opt_player_2| if (opt_player_2.*) |*player_2| {
-                                        for (&player_2.opt_dynamites) |*opt_dynamite_2| if (opt_dynamite_2.*) |*dynamite_2| {
-                                            if (funcs.gridPositionFromPixelPosition(dynamite_2.position).eql(cell_position)) {
-                                                dynamite_2.timer = 0;
-
-                                                break :D;
-                                            }
-                                        };
-                                    };
-                                }
-                            } else break;
-                        }
-                    }
-                } else if (dynamite.state == .exploded) {
-                    self.cell_grid[@intCast(grid_position.y)][@intCast(grid_position.x)].texture.tag = .ground;
-
-                    for (cons.DIRECTIONS) |dir| {
-                        for (1..dynamite.radius) |offset| {
-                            const cell_position = grid_position.add(dir.mul_scalar(@intCast(offset)));
-                            var cell = &self.cell_grid[@intCast(cell_position.y)][@intCast(cell_position.x)];
-
-                            if (cell.texture.tag != .wall) {
-                                if (cell.texture.tag == .explosion) cell.texture.tag = .ground;
-                            } else break;
-                        }
-                    }
-
-                    opt_dynamite.* = null;
-                }
-
-                dynamite.switchState();
-            }
-        };
-    };
 }

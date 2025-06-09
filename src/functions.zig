@@ -11,39 +11,39 @@ pub fn isPointInRect(point: types.Vec2, rect_pos: types.Vec2, rect_size: types.V
     return point.x >= rect_pos.x and point.x < rect_pos.x + rect_size.x and point.y >= rect_pos.y and point.y < rect_pos.y + rect_size.y;
 }
 
-pub fn gridPositionFromPixelPosition(pixel_position: b2.b2Vec2) types.Vec2 {
+pub fn screenPosToPhysPos(screen_pos: b2.b2Vec2, cell_size: f32) b2.b2Vec2 {
     return .{
-        .x = @divExact(@as(i32, @intFromFloat(pixel_position.x - cons.CELL_SIZE / 2 - cons.GUI_SIZE)), cons.CELL_SIZE),
-        .y = @divExact(@as(i32, @intFromFloat(pixel_position.y - cons.CELL_SIZE / 2)), cons.CELL_SIZE),
+        .x = (screen_pos.x - cell_size / 2 - cell_size * cons.GUI_SIZE) / cell_size * cons.PHYSICS_UNIT,
+        .y = (screen_pos.y - cell_size / 2) / cell_size * cons.PHYSICS_UNIT,
     };
 }
 
-pub fn gridPositionFromPixelPosition2(pixel_position: b2.b2Vec2) types.Vec2 {
+pub fn physPosToScreenPos(phys_pos: b2.b2Vec2, cell_size: f32) b2.b2Vec2 {
     return .{
-        .x = @divTrunc(@as(i32, @intFromFloat(pixel_position.x - cons.CELL_SIZE / 2 - cons.GUI_SIZE)), cons.CELL_SIZE),
-        .y = @divTrunc(@as(i32, @intFromFloat(pixel_position.y - cons.CELL_SIZE / 2)), cons.CELL_SIZE),
+        .x = phys_pos.x / cons.PHYSICS_UNIT * cell_size + cell_size / 2 + cell_size * cons.GUI_SIZE,
+        .y = phys_pos.y / cons.PHYSICS_UNIT * cell_size + cell_size / 2,
     };
 }
 
-pub fn drawRectangleWithOutline(pos: types.Vec2, size: types.Vec2, color: rl.Color, outline_thickness: f32, outline_color: rl.Color) void {
-    rl.drawRectangle(pos.x, pos.y, size.x, size.y, color);
+pub fn drawRectangleWithOutline(pos: b2.b2Vec2, size: b2.b2Vec2, color: rl.Color, outline_thickness: f32, outline_color: rl.Color) void {
+    rl.drawRectangle(@intFromFloat(pos.x), @intFromFloat(pos.y), @intFromFloat(size.x), @intFromFloat(size.y), color);
     rl.drawRectangleLinesEx(
-        .{ .x = @floatFromInt(pos.x), .y = @floatFromInt(pos.y), .width = @floatFromInt(size.x), .height = @floatFromInt(size.y) },
+        .{ .x = pos.x, .y = pos.y, .width = size.x, .height = size.y },
         outline_thickness,
         outline_color,
     );
 }
 
-pub fn drawGridTexture(texture: rl.Texture2D, pos: types.Vec2) void {
-    drawTexture(texture, .{ .x = @floatFromInt(cons.GUI_SIZE + cons.CELL_SIZE * pos.x + cons.CELL_SIZE / 2), .y = @floatFromInt(cons.CELL_SIZE * pos.y + cons.CELL_SIZE / 2) }, 0);
+pub fn drawGridTexture(texture: rl.Texture2D, pos: b2.b2Vec2, cell_size: f32) void {
+    drawTexture(texture, .{ .x = cons.GUI_SIZE * cell_size + cell_size * pos.x + cell_size / 2, .y = cell_size * pos.y + cell_size / 2 }, 0, cell_size);
 }
 
-pub fn drawCenteredTexture(texture: rl.Texture2D, pos: b2.b2Vec2, rot: f32) void {
-    drawTexture(texture, pos, rot);
+pub fn drawCenteredTexture(texture: rl.Texture2D, pos: b2.b2Vec2, rot: f32, cell_size: f32) void {
+    drawTexture(texture, pos, rot, cell_size);
 }
 
-fn drawTexture(texture: rl.Texture2D, pos: b2.b2Vec2, rot: f32) void {
-    const scale = cons.CELL_SIZE / @as(f32, @floatFromInt(texture.width));
+fn drawTexture(texture: rl.Texture2D, pos: b2.b2Vec2, rot: f32, cell_size: f32) void {
+    const scale = cell_size / @as(f32, @floatFromInt(texture.width));
     const src = rl.Rectangle{
         .x = 0,
         .y = 0,
@@ -64,58 +64,19 @@ fn drawTexture(texture: rl.Texture2D, pos: b2.b2Vec2, rot: f32) void {
     rl.drawTexturePro(texture, src, dest, origin, rot, .white);
 }
 
-fn generateMaskedTextures(original: rl.Texture2D) [3]rl.Texture2D {
-    const colors = [3][3]f32{
-        [3]f32{ 1.0, 0.0, 0.0 }, // Red
-        [3]f32{ 0.0, 1.0, 0.0 }, // Green
-        [3]f32{ 0.0, 0.0, 1.0 }, // Blue
-    };
-
-    var result: [3]rl.Texture2D = undefined;
-    const shader = rl.loadShader(null, "mask.fs") catch @panic("Shader load failed!");
-
-    // Preserve original texture filter
-    const originalFilter = rl.TextureFilter.bilinear; // Default
-    rl.setTextureFilter(original, rl.TextureFilter.point);
-
-    for (colors, 0..) |color, i| {
-        // Create render target
-        const target = try rl.loadRenderTexture(original.width, original.height);
-
-        // Draw to render texture
-        rl.beginTextureMode(target);
-        rl.clearBackground(.{ .r = 0, .g = 0, .b = 0, .a = 0 }); // Transparent
-
-        rl.beginShaderMode(shader);
-        rl.setShaderValue(shader, rl.getShaderLocation(shader, "color"), &color, rl.ShaderUniformDataType.vec3);
-        rl.drawTexture(original, 0, 0, .white);
-        rl.endShaderMode();
-        rl.endTextureMode();
-
-        // Extract texture from render target
-        result[i] = rl.loadTextureFromImage(rl.loadImageFromTexture(target.texture));
-        rl.unloadRenderTexture(target);
-    }
-
-    // Cleanup
-    rl.setTextureFilter(original, originalFilter);
-    rl.unloadShader(shader);
-    return result;
-}
-
-pub fn createCollider(x: usize, y: usize, world_id_2: b2.b2WorldId) b2.b2BodyId {
+pub fn createCollider(x: usize, y: usize, world_id: b2.b2WorldId) b2.b2BodyId {
     var body_def = b2.b2DefaultBodyDef();
     body_def.position = .{
-        .x = @floatFromInt(cons.GUI_SIZE + cons.CELL_SIZE * x + cons.CELL_SIZE / 2),
-        .y = @floatFromInt(cons.CELL_SIZE * y + cons.CELL_SIZE / 2),
+        .x = @floatFromInt(cons.PHYSICS_UNIT * x),
+        .y = @floatFromInt(cons.PHYSICS_UNIT * y),
     };
 
-    const body_id = b2.b2CreateBody(world_id_2, &body_def);
+    const body_id = b2.b2CreateBody(world_id, &body_def);
 
     _ = b2.b2CreatePolygonShape(
         body_id,
         &b2.b2DefaultShapeDef(),
-        &b2.b2MakeBox(cons.CELL_SIZE / 2, cons.CELL_SIZE / 2),
+        &b2.b2MakeBox(@as(f32, @floatFromInt(cons.PHYSICS_UNIT)) / 2, @as(f32, @floatFromInt(cons.PHYSICS_UNIT)) / 2),
     );
 
     return body_id;

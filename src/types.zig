@@ -6,31 +6,16 @@ const b2 = @cImport({
 
 const cons = @import("constants.zig");
 const funcs = @import("functions.zig");
+const Player = @import("Player.zig");
 
-pub const Vec2 = struct {
-    x: i32,
-    y: i32,
+pub fn Vec2(comptime T: type) type {
+    return struct {
+        x: T,
+        y: T,
+    };
+}
 
-    pub fn eql(self: @This(), other: @This()) bool {
-        return self.x == other.x and self.y == other.y;
-    }
-
-    pub fn add(self: @This(), other: @This()) @This() {
-        return .{
-            .x = self.x + other.x,
-            .y = self.y + other.y,
-        };
-    }
-
-    pub fn mul_scalar(self: @This(), scalar: i32) @This() {
-        return .{
-            .x = self.x * scalar,
-            .y = self.y * scalar,
-        };
-    }
-};
-
-pub const Texture = enum(u8) {
+pub const Texture = enum {
     ground,
     wall,
     death_wall,
@@ -39,6 +24,11 @@ pub const Texture = enum(u8) {
     dynamite_2,
     explosion_1,
     explosion_2,
+    upgrade_dynamite,
+    upgrade_heal,
+    upgrade_radius,
+    upgrade_speed,
+    upgrade_teleport,
     hearth,
     player_down_1,
     player_down_2,
@@ -75,6 +65,15 @@ pub const ExplosionVariant = enum {
     crossed,
 };
 
+pub const UpgradeUnderneath = enum {
+    dynamite,
+    heal,
+    radius,
+    speed,
+    teleport,
+    none,
+};
+
 pub const DynamiteState = enum {
     idle,
     exploding,
@@ -93,6 +92,7 @@ pub const Explosion = struct {
     team: Team,
     variant: ExplosionVariant,
     timer: f32,
+    upgrade_underneath: UpgradeUnderneath,
 
     pub fn update(self: *@This()) void {
         self.timer -= cons.PHYSICS_TIMESTEP;
@@ -124,21 +124,29 @@ pub const Cell = struct {
         };
     }
 
-    pub fn initExplosion(team: Team, variant: ExplosionVariant) @This() {
+    pub fn initExplosion(team: Team, variant: ExplosionVariant, upgrade_underneath: UpgradeUnderneath) @This() {
         return .{
             .tag = if (variant == .crossed) .explosion_2 else .explosion_1,
             .variant = .{ .explosion_1 = .{
                 .team = team,
                 .variant = variant,
                 .timer = cons.EXPLOSION_DURATION,
+                .upgrade_underneath = upgrade_underneath,
             } },
         };
     }
 
-    pub fn initDynamite(team: Team) @This() {
+    pub fn initDynamite(team: Team, radius: u8) @This() {
         return .{
             .tag = .dynamite_1,
-            .variant = .{ .dynamite_1 = .init(team) },
+            .variant = .{ .dynamite_1 = .init(team, radius) },
+        };
+    }
+
+    pub fn initUpgrade(upgrade_variant: UpgradeUnderneath) @This() {
+        return .{
+            .tag = @enumFromInt(@intFromEnum(Texture.upgrade_dynamite) + @intFromEnum(upgrade_variant)),
+            .variant = .{ .upgrade_dynamite = {} },
         };
     }
 };
@@ -152,6 +160,11 @@ pub const CellVariant = union {
     dynamite_2: Dynamite,
     explosion_1: Explosion,
     explosion_2: Explosion,
+    upgrade_dynamite: void,
+    upgrade_heal: void,
+    upgrade_radius: void,
+    upgrade_speed: void,
+    upgrade_teleport: void,
     hearth: void,
     player_down_1: void,
     player_down_2: void,
@@ -169,12 +182,12 @@ pub const Dynamite = struct {
     timer: f32,
     radius: u8,
 
-    pub fn init(team: Team) @This() {
+    pub fn init(team: Team, radius: u8) @This() {
         return .{
             .team = team,
             .state = .idle,
             .timer = 3,
-            .radius = 4,
+            .radius = radius,
         };
     }
 
@@ -200,4 +213,14 @@ pub const Dynamite = struct {
             .exploded => unreachable,
         }
     }
+};
+
+pub const PlayerConfig = struct {
+    team_color: rl.Color,
+    key_bindings: std.enums.EnumArray(Player.MoveDirection, rl.KeyboardKey),
+};
+
+pub const GameSettings = struct {
+    player_count: i32 = 2,
+    player_configs: [4]PlayerConfig,
 };
