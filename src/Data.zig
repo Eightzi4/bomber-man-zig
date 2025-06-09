@@ -21,7 +21,8 @@ team_colors: std.enums.EnumArray(types.Team, rl.Color),
 textures: std.enums.EnumArray(types.Texture, rl.Texture2D),
 original_ground_image: rl.Image,
 cell_size: f32,
-settings: types.GameSettings,
+player_count: i32,
+key_bindings: std.enums.EnumArray(types.Team, Player.Actions),
 
 pub fn init() @This() {
     const cell_size = @as(f32, @floatFromInt(rl.getScreenHeight())) / cons.GRID_SIZE.y;
@@ -52,20 +53,45 @@ pub fn init() @This() {
         .textures = textures,
         .original_ground_image = original_ground_image,
         .cell_size = cell_size,
-        .settings = .{
-            .player_count = 2, // Initialize player count
-            .player_configs = .{
-                // Player 1
-                .{ .team_color = .blue, .key_bindings = .init(.{ .left = .a, .right = .d, .up = .w, .down = .s }) },
-                // Player 2
-                .{ .team_color = .red, .key_bindings = .init(.{ .left = .left, .right = .right, .up = .up, .down = .down }) },
-                // Player 3
-                .{ .team_color = .green, .key_bindings = .init(.{ .left = .j, .right = .l, .up = .i, .down = .k }) },
-                // Player 4 - THE FIX
-                // We ensure every key binding has a default safe value of .null.
-                .{ .team_color = .yellow, .key_bindings = .init(.{ .left = .j, .right = .l, .up = .i, .down = .k }) },
+        .player_count = 2,
+        .key_bindings = .init(.{
+            .alpha = .{
+                .movement = .init(.{
+                    .left = .{ .binded_key = .a },
+                    .right = .{ .binded_key = .d },
+                    .down = .{ .binded_key = .s },
+                    .up = .{ .binded_key = .w },
+                }),
+                .place_dynamite = .{ .binded_key = .space },
             },
-        },
+            .beta = .{
+                .movement = .init(.{
+                    .left = .{ .binded_key = .left },
+                    .right = .{ .binded_key = .right },
+                    .down = .{ .binded_key = .down },
+                    .up = .{ .binded_key = .up },
+                }),
+                .place_dynamite = .{ .binded_key = .enter },
+            },
+            .gamma = .{
+                .movement = .init(.{
+                    .left = .{ .binded_key = .f },
+                    .right = .{ .binded_key = .h },
+                    .down = .{ .binded_key = .g },
+                    .up = .{ .binded_key = .t },
+                }),
+                .place_dynamite = .{ .binded_key = .y },
+            },
+            .delta = .{
+                .movement = .init(.{
+                    .left = .{ .binded_key = .j },
+                    .right = .{ .binded_key = .l },
+                    .down = .{ .binded_key = .k },
+                    .up = .{ .binded_key = .i },
+                }),
+                .place_dynamite = .{ .binded_key = .o },
+            },
+        }),
     };
 }
 
@@ -96,7 +122,7 @@ pub fn run(self: *@This()) void {
 }
 
 pub fn runMenu(data: *@This()) State {
-    var menu = Menu.init(&data.textures, &data.settings);
+    var menu = Menu.init(data);
 
     while (!rl.windowShouldClose()) {
         if (menu.exit_game) return .quit;
@@ -114,65 +140,16 @@ pub fn runGame(data: *@This()) State {
     var game = Game.init(data);
     defer game.deinit();
 
-    game.opt_players.set(.alpha, .init(
-        .{ .x = 1, .y = 1 },
-        game.world_id,
-        .{
-            .movement = .init(.{
-                .left = .{ .binded_key = .a },
-                .right = .{ .binded_key = .d },
-                .up = .{ .binded_key = .w },
-                .down = .{ .binded_key = .s },
-            }),
-            .place_dynamite = .{ .binded_key = .space },
-        },
-        &game.team_textures.get(.alpha).player_textures,
-    ));
+    for (0..@intCast(data.player_count)) |i| {
+        const team: types.Team = @enumFromInt(i);
 
-    game.opt_players.set(.beta, .init(
-        .{ .x = 13, .y = 11 },
-        game.world_id,
-        .{
-            .movement = .init(.{
-                .left = .{ .binded_key = .left },
-                .right = .{ .binded_key = .right },
-                .up = .{ .binded_key = .up },
-                .down = .{ .binded_key = .down },
-            }),
-            .place_dynamite = .{ .binded_key = .enter },
-        },
-        &game.team_textures.get(.beta).player_textures,
-    ));
-
-    game.opt_players.set(.gamma, .init(
-        .{ .x = 1, .y = 11 },
-        game.world_id,
-        .{
-            .movement = .init(.{
-                .left = .{ .binded_key = .eight },
-                .right = .{ .binded_key = .six },
-                .up = .{ .binded_key = .eight },
-                .down = .{ .binded_key = .two },
-            }),
-            .place_dynamite = .{ .binded_key = .five },
-        },
-        &game.team_textures.get(.gamma).player_textures,
-    ));
-
-    game.opt_players.set(.delta, .init(
-        .{ .x = 1, .y = 11 },
-        game.world_id,
-        .{
-            .movement = .init(.{
-                .left = .{ .binded_key = .z },
-                .right = .{ .binded_key = .u },
-                .up = .{ .binded_key = .i },
-                .down = .{ .binded_key = .o },
-            }),
-            .place_dynamite = .{ .binded_key = .p },
-        },
-        &game.team_textures.get(.delta).player_textures,
-    ));
+        game.opt_players.set(team, .init(
+            cons.PLAYER_START_POSITIONS[i],
+            game.world_id,
+            data.key_bindings.get(team),
+            &game.team_textures.getPtr(team).player_textures,
+        ));
+    }
 
     while (!rl.windowShouldClose()) {
         if (rl.isKeyDown(.escape)) return .menu;

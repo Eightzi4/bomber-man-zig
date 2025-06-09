@@ -35,21 +35,26 @@ pub fn drawRectangleWithOutline(pos: b2.b2Vec2, size: b2.b2Vec2, color: rl.Color
 }
 
 pub fn drawGridTexture(texture: rl.Texture2D, pos: b2.b2Vec2, cell_size: f32) void {
-    drawTexture(texture, .{ .x = cons.GUI_SIZE * cell_size + cell_size * pos.x + cell_size / 2, .y = cell_size * pos.y + cell_size / 2 }, 0, cell_size);
+    drawTexture(texture, .{ .x = cons.GUI_SIZE * cell_size + cell_size * pos.x + cell_size / 2, .y = cell_size * pos.y + cell_size / 2 }, 0, cell_size, false);
 }
 
-pub fn drawCenteredTexture(texture: rl.Texture2D, pos: b2.b2Vec2, rot: f32, cell_size: f32) void {
-    drawTexture(texture, pos, rot, cell_size);
+pub fn drawCenteredTexture(texture: rl.Texture2D, pos: b2.b2Vec2, rot: f32, cell_size: f32, flip_h: bool) void {
+    drawTexture(texture, pos, rot, cell_size, flip_h);
 }
 
-fn drawTexture(texture: rl.Texture2D, pos: b2.b2Vec2, rot: f32, cell_size: f32) void {
+fn drawTexture(texture: rl.Texture2D, pos: b2.b2Vec2, rot: f32, cell_size: f32, flip_h: bool) void {
     const scale = cell_size / @as(f32, @floatFromInt(texture.width));
-    const src = rl.Rectangle{
+    var src = rl.Rectangle{
         .x = 0,
         .y = 0,
         .width = @floatFromInt(texture.width),
         .height = @floatFromInt(texture.height),
     };
+
+    if (flip_h) {
+        src.width *= -1;
+    }
+
     const dest = rl.Rectangle{
         .x = pos.x,
         .y = pos.y,

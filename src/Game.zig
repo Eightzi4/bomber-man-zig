@@ -85,33 +85,25 @@ fn fixedUpdate(self: *@This()) void {
     while (iterator.next()) |opt_player| if (opt_player.value.*) |*player| if (player.health > 0) {
         player.fixedUpdate();
 
-        var movement_iterator = player.actions.movement.iterator();
-        while (movement_iterator.next()) |action| {
-            if (rl.isKeyPressed(action.value.binded_key)) {
-                const current_time = @as(f32, @floatCast(rl.getTime()));
-                const time_since_last_press = current_time - action.value.last_pressed;
+        if (player.flash_request) |direction| {
+            player.flash_request = null;
 
-                if (player.flash_timer <= 0 and time_since_last_press < 0.5) {
-                    const current_pos = b2.b2Body_GetPosition(player.body_id);
-                    const direction_vector = cons.DIRECTIONS[@intFromEnum(action.key)];
-                    const grid_pos = b2.b2Vec2{
-                        .x = @round((current_pos.x + @as(f32, @floatFromInt(direction_vector.x * 2 * cons.PHYSICS_UNIT))) / cons.PHYSICS_UNIT),
-                        .y = @round((current_pos.y + @as(f32, @floatFromInt(direction_vector.y * 2 * cons.PHYSICS_UNIT))) / cons.PHYSICS_UNIT),
-                    };
+            const current_pos = b2.b2Body_GetPosition(player.body_id);
+            const direction_vector = cons.DIRECTIONS[@intFromEnum(direction)];
+            const dst_phys_pos = b2.b2Vec2{
+                .x = current_pos.x + @as(f32, @floatFromInt(direction_vector.x * 2 * cons.PHYSICS_UNIT)),
+                .y = current_pos.y + @as(f32, @floatFromInt(direction_vector.y * 2 * cons.PHYSICS_UNIT)),
+            };
+            const grid_pos = b2.b2Vec2{
+                .x = @round(dst_phys_pos.x / cons.PHYSICS_UNIT),
+                .y = @round(dst_phys_pos.y / cons.PHYSICS_UNIT),
+            };
 
-                    if (grid_pos.x >= 0 and grid_pos.x < cons.GRID_SIZE.x and grid_pos.y >= 0 and grid_pos.y < cons.GRID_SIZE.y) {
-                        const dest_cell = self.cell_grid[@intFromFloat(grid_pos.y)][@intFromFloat(grid_pos.x)];
-
-                        if (dest_cell.tag != .wall and dest_cell.tag != .death_wall and dest_cell.tag != .barrel) {
-                            b2.b2Body_SetTransform(player.body_id, .{ .x = grid_pos.x * cons.PHYSICS_UNIT, .y = grid_pos.y * cons.PHYSICS_UNIT }, .{ .c = 1, .s = 0 });
-
-                            player.flash_timer = cons.FLASH_COOLDOWN;
-                        }
-                    }
-
-                    action.value.last_pressed = -1.0;
-                } else {
-                    action.value.last_pressed = current_time;
+            if (grid_pos.x >= 0 and grid_pos.x < cons.GRID_SIZE.x and grid_pos.y >= 0 and grid_pos.y < cons.GRID_SIZE.y) {
+                const dest_cell = self.cell_grid[@intFromFloat(grid_pos.y)][@intFromFloat(grid_pos.x)];
+                if (dest_cell.tag != .wall and dest_cell.tag != .death_wall and dest_cell.tag != .barrel) {
+                    b2.b2Body_SetTransform(player.body_id, .{ .x = grid_pos.x * cons.PHYSICS_UNIT, .y = grid_pos.y * cons.PHYSICS_UNIT }, .{ .c = 1, .s = 0 });
+                    player.flash_timer = cons.FLASH_COOLDOWN;
                 }
             }
         }
@@ -124,9 +116,7 @@ fn fixedUpdate(self: *@This()) void {
                     .x = @intFromFloat(@round(position.x / cons.PHYSICS_UNIT)),
                     .y = @intFromFloat(@round(position.y / cons.PHYSICS_UNIT)),
                 };
-
                 const cell = &self.cell_grid[grid_pos.y][grid_pos.x];
-
                 if (cell.tag != .dynamite_1 and cell.tag != .dynamite_2) {
                     cell.* = .initDynamite(opt_player.key, player.explosion_radius);
                     player.dynamite_count -= 1;
@@ -158,6 +148,42 @@ pub fn draw(self: *@This()) void {
 }
 
 fn drawGui(self: *@This()) void {
+    var alive_count: u32 = 0;
+    var winner: ?*const Player = null;
+    var winner_team: ?types.Team = null;
+
+    var check_iterator = self.opt_players.iterator();
+    while (check_iterator.next()) |opt_player| if (opt_player.value.*) |*p| {
+        if (p.health > 0) {
+            alive_count += 1;
+            winner = p;
+            winner_team = opt_player.key;
+        }
+    };
+
+    if (alive_count == 1) if (winner) |the_winner| {
+        const team = winner_team.?;
+        const screen_width = rl.getScreenWidth();
+        const screen_height = rl.getScreenHeight();
+
+        rl.drawRectangle(0, 0, screen_width, screen_height, rl.fade(.black, 0.75));
+
+        var win_text_buf: [128]u8 = undefined;
+        const win_text = std.fmt.bufPrintZ(&win_text_buf, "Player {s} wins!\nScore: {d}", .{
+            @tagName(team),
+            the_winner.score,
+        }) catch "Error";
+
+        const font_size: i32 = 60;
+        const text_size = rl.measureTextEx(rl.getFontDefault() catch @panic("Failed to load default font!"), win_text, @as(f32, @floatFromInt(font_size)), 1);
+
+        const text_pos_x = @as(f32, @floatFromInt(screen_width)) / 2.0 - text_size.x / 2.0;
+        const text_pos_y = @as(f32, @floatFromInt(screen_height)) / 2.0 - text_size.y / 2.0;
+
+        rl.drawText(win_text, @intFromFloat(text_pos_x), @intFromFloat(text_pos_y), font_size, .white);
+        return;
+    };
+
     const cell_size = self.cell_size.*;
     const gui_pixel_width = cons.GUI_SIZE * cell_size;
     const padding = gui_pixel_width / 20.0;
@@ -219,7 +245,8 @@ fn drawGui(self: *@This()) void {
         const name_pos_y = @as(i32, @intFromFloat(icon_dest_rect.y));
         rl.drawText(name, text_area_x, name_pos_y, name_font_size, .black);
 
-        const score_text = "Score: 9999";
+        var score_buf: [32]u8 = undefined;
+        const score_text = std.fmt.bufPrintZ(&score_buf, "Score: {d}", .{player.score}) catch "Score Error";
         const score_font_size = @as(i32, @intFromFloat(@max(10.0, cell_size * 0.4)));
         const score_pos_y = name_pos_y + name_font_size + @as(i32, @intFromFloat(padding * 0.5));
         rl.drawText(score_text, text_area_x, score_pos_y, score_font_size, .light_gray);
@@ -227,8 +254,7 @@ fn drawGui(self: *@This()) void {
         const stats_area_y = icon_dest_rect.y + icon_dest_rect.height + padding / 2;
         const stats_available_width = @as(f32, @floatFromInt(player_gui_size.x));
 
-        // --- Health Bar (Top Row) ---
-        const hearth_texture = self.textures.get(.hearth);
+        const hearth_texture = if (player.invincibility_timer > 0) self.textures.get(.invincible_hearth) else self.textures.get(.hearth);
         const heart_icon_size = cell_size * 0.4;
         const heart_spacing = heart_icon_size * 0.15;
         const num_heart_spaces = @max(0, @as(i32, @intCast(player.health)) - 1);
@@ -244,7 +270,6 @@ fn drawGui(self: *@This()) void {
             rl.drawTextureEx(hearth_texture, heart_pos, 0.0, heart_icon_size / @as(f32, @floatFromInt(hearth_texture.width)), .white);
         }
 
-        // --- Dynamite Bar (Bottom Row) ---
         const dynamite_texture = self.team_textures.get(team).dynamite_textures[0];
         const dynamites_y = stats_area_y + heart_icon_size + padding * 0.5;
         const dynamite_icon_size = cell_size * 0.35;
@@ -287,7 +312,7 @@ fn generateCellGrid(random: std.Random, world_id: b2.b2WorldId) [cons.GRID_SIZE.
 
 fn createTeamTextures(team_colors: std.enums.EnumArray(types.Team, rl.Color), textures: std.enums.EnumArray(types.Texture, rl.Texture2D)) std.enums.EnumArray(types.Team, types.TeamTextures) {
     var team_textures = std.enums.EnumArray(types.Team, types.TeamTextures).initUndefined();
-    const shader = rl.loadShader(null, "mask.fs") catch @panic("Failed to load shader!");
+    const shader = rl.loadShader(null, "assets/shaders/mask.fs") catch @panic("Failed to load shader!");
     defer rl.unloadShader(shader);
 
     for (std.enums.values(types.Team)) |team| {
@@ -391,7 +416,7 @@ fn drawBackground(self: *@This()) void {
                     if (cell.variant.explosion_1.variant == .vertical) {
                         const pos = funcs.physPosToScreenPos(.{ .x = @floatFromInt(x * cons.PHYSICS_UNIT), .y = @floatFromInt(y * cons.PHYSICS_UNIT) }, cell_size);
 
-                        funcs.drawCenteredTexture(texture, pos, 90, cell_size);
+                        funcs.drawCenteredTexture(texture, pos, 90, cell_size, false);
                     } else {
                         funcs.drawGridTexture(texture, .{ .x = @floatFromInt(x), .y = @floatFromInt(y) }, cell_size);
                     }
@@ -421,24 +446,37 @@ fn checkPlayerPositions(self: *@This()) void {
 
         switch (cell.tag) {
             .ground, .dynamite_1, .dynamite_2 => {},
-            .explosion_1, .explosion_2 => player.hurt(),
+            .explosion_1, .explosion_2 => {
+                const damaging_team = cell.variant.explosion_1.team;
+                if (damaging_team != opt_player.key) {
+                    if (self.opt_players.getPtr(damaging_team).*) |*damaging_player| {
+                        if (player.invincibility_timer < 0) damaging_player.score += 25;
+                    }
+                }
+                player.hurt();
+            },
             .upgrade_dynamite => {
+                player.score += 2;
                 player.dynamite_count += 1;
                 cell.* = .initGround();
             },
             .upgrade_heal => {
+                player.score += 2;
                 player.heal();
                 cell.* = .initGround();
             },
             .upgrade_radius => {
+                player.score += 2;
                 player.explosion_radius += 1;
                 cell.* = .initGround();
             },
             .upgrade_speed => {
+                player.score += 2;
                 player.speed += cons.PHYSICS_UNIT;
                 cell.* = .initGround();
             },
             .upgrade_teleport => {
+                player.score += 2;
                 player.flash_timer = 0;
                 cell.* = .initGround();
             },
@@ -501,6 +539,10 @@ fn updateDynamitesAndExplosions(self: *@This()) void {
                                     );
                                 },
                                 .barrel => {
+                                    if (self.opt_players.getPtr(cell.variant.dynamite_1.team).*) |*player| {
+                                        player.score += 5;
+                                    }
+
                                     b2.b2DestroyBody(cell_in_radius.variant.barrel.body_id);
 
                                     var random = self.data.prng.random();

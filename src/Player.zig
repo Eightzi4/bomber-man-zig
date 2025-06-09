@@ -9,6 +9,8 @@ const cons = @import("constants.zig");
 const funcs = @import("functions.zig");
 const Game = @import("Game.zig");
 
+const ANIMATION_PLAYBACK_SPEED = 8.0;
+
 pub const MoveDirection = enum {
     left,
     right,
@@ -33,6 +35,7 @@ pub const Actions = struct {
     },
 };
 
+score: u16,
 dynamite_count: u8,
 explosion_radius: u8,
 health: u8,
@@ -43,14 +46,19 @@ old_position: b2.b2Vec2,
 body_id: b2.b2BodyId,
 textures: *const types.PlayerTextures,
 actions: Actions,
+facing_direction: MoveDirection,
+animation_timer: f32,
+is_moving: bool,
+flash_request: ?MoveDirection,
 
 pub fn init(position: b2.b2Vec2, world_id: b2.b2WorldId, actions: Actions, textures: *const types.PlayerTextures) @This() {
     const pos = b2.b2Vec2{ .x = cons.PHYSICS_UNIT * position.x, .y = cons.PHYSICS_UNIT * position.y };
 
     return .{
+        .score = 0,
         .explosion_radius = 2,
         .dynamite_count = 1,
-        .health = 3,
+        .health = cons.START_HEALTH,
         .invincibility_timer = 0,
         .flash_timer = std.math.floatMax(f32),
         .speed = cons.PHYSICS_UNIT * 5,
@@ -61,15 +69,16 @@ pub fn init(position: b2.b2Vec2, world_id: b2.b2WorldId, actions: Actions, textu
             body_def.type = b2.b2_dynamicBody;
             body_def.fixedRotation = true;
             body_def.linearDamping = 10;
-
             const body_id = b2.b2CreateBody(world_id, &body_def);
-
             _ = b2.b2CreateCircleShape(body_id, &b2.b2DefaultShapeDef(), &b2.b2Circle{ .radius = @as(f32, @floatFromInt(cons.PHYSICS_UNIT)) / 2 });
-
             break :D body_id;
         },
         .actions = actions,
         .textures = textures,
+        .facing_direction = .down,
+        .animation_timer = 0.0,
+        .is_moving = false,
+        .flash_request = null,
     };
 }
 
@@ -78,12 +87,49 @@ pub fn update(self: *@This()) void {
 
     if (!self.actions.place_dynamite.cached_input) self.actions.place_dynamite.cached_input = rl.isKeyPressed(self.actions.place_dynamite.binded_key);
 
+    var movement_iterator = self.actions.movement.iterator();
+    while (movement_iterator.next()) |action| {
+        if (rl.isKeyPressed(action.value.binded_key)) {
+            const current_time = rl.getTime();
+            const time_since_last_press = current_time - action.value.last_pressed;
+
+            if (self.flash_timer <= 0 and time_since_last_press < 0.25) {
+                self.flash_request = action.key;
+                action.value.last_pressed = -1.0;
+            } else {
+                action.value.last_pressed = @floatCast(current_time);
+            }
+        }
+    }
+
     self.old_position = b2.b2Body_GetPosition(self.body_id);
 }
 
 pub fn fixedUpdate(self: *@This()) void {
     self.invincibility_timer -= cons.PHYSICS_TIMESTEP;
     self.flash_timer -= cons.PHYSICS_TIMESTEP;
+
+    const velocity = b2.b2Body_GetLinearVelocity(self.body_id);
+    const current_speed = b2.b2Length(velocity);
+
+    self.is_moving = current_speed > 0.1;
+
+    if (self.is_moving) {
+        if (@abs(velocity.y) > @abs(velocity.x)) {
+            self.facing_direction = if (velocity.y > 0) .down else .up;
+        } else {
+            self.facing_direction = if (velocity.x > 0) .right else .left;
+        }
+    }
+
+    if (self.is_moving) {
+        const anim_speed_factor = current_speed / self.speed;
+
+        self.animation_timer += anim_speed_factor * cons.PHYSICS_TIMESTEP * ANIMATION_PLAYBACK_SPEED;
+        self.animation_timer = @mod(self.animation_timer, 1.0);
+    } else {
+        self.animation_timer = 0.0;
+    }
 
     handleMovement(self.body_id, self.speed, self.actions.movement);
 }
@@ -95,7 +141,39 @@ pub fn draw(self: *@This(), alpha: f32, cell_size: f32) void {
         .y = (self.old_position.y * (1 - alpha) + position.y * alpha),
     }, cell_size);
 
-    funcs.drawCenteredTexture(self.textures.down[0], draw_position, 0, cell_size);
+    const texture_to_draw = switch (self.facing_direction) {
+        .up => self.getUpTexture(),
+        .down => self.getDownTexture(),
+        .left, .right => self.getSideTexture(),
+    };
+
+    const should_flip = (self.facing_direction == .right);
+
+    funcs.drawCenteredTexture(texture_to_draw, draw_position, 0, cell_size, should_flip);
+}
+
+fn getUpTexture(self: *@This()) rl.Texture2D {
+    if (!self.is_moving) return self.textures.up[0];
+
+    const frame_index: usize = if (self.animation_timer < 0.5) 0 else 1;
+    return self.textures.up[frame_index];
+}
+
+fn getDownTexture(self: *@This()) rl.Texture2D {
+    if (!self.is_moving) return self.textures.down[0];
+
+    const frame_index: usize = if (self.animation_timer < 0.5) 0 else 1;
+    return self.textures.down[frame_index];
+}
+
+fn getSideTexture(self: *@This()) rl.Texture2D {
+    if (!self.is_moving) return self.textures.side[0];
+
+    const animation_sequence = [_]u8{ 1, 0, 2, 0 };
+    const step = @as(usize, @intFromFloat(self.animation_timer * @as(f32, @floatFromInt(animation_sequence.len))));
+    const frame_index = animation_sequence[step];
+
+    return self.textures.side[frame_index];
 }
 
 pub fn hurt(self: *@This()) void {
@@ -114,26 +192,23 @@ fn handleMovement(body_id: b2.b2BodyId, speed: f32, movement_actions: std.enums.
         .x = @floatFromInt(@as(i2, @intFromBool(movement_actions.get(.right).cached_input)) - @as(i2, @intFromBool(movement_actions.get(.left).cached_input))),
         .y = @floatFromInt(@as(i2, @intFromBool(movement_actions.get(.down).cached_input)) - @as(i2, @intFromBool(movement_actions.get(.up).cached_input))),
     };
-
     const position = b2.b2Body_GetPosition(body_id);
-
     if (input_vector.x == 0 and input_vector.y != 0) {
         const grid_position_x = @divFloor(@as(i32, @intFromFloat(position.x)), cons.PHYSICS_UNIT);
         const offset = position.x - cons.PHYSICS_UNIT * @as(f32, @floatFromInt(grid_position_x));
-
-        if (@mod(grid_position_x, 2) == 0)
-            input_vector.x = if (offset < 0) -1 else 1
-        else
+        if (@mod(grid_position_x, 2) == 0) {
+            input_vector.x = if (offset < 0) -1 else 1;
+        } else {
             input_vector.x = if (offset < -cons.PHYSICS_UNIT / 5) 1 else if (offset > cons.PHYSICS_UNIT / 5) -1 else 0;
+        }
     } else if (input_vector.y == 0 and input_vector.x != 0) {
         const grid_position_y = @divFloor(@as(i32, @intFromFloat(position.y)), cons.PHYSICS_UNIT);
         const offset = position.y - cons.PHYSICS_UNIT * @as(f32, @floatFromInt(grid_position_y));
-
-        if (@mod(grid_position_y, 2) == 0)
-            input_vector.y = if (offset < 0) -1 else 1
-        else
+        if (@mod(grid_position_y, 2) == 0) {
+            input_vector.y = if (offset < 0) -1 else 1;
+        } else {
             input_vector.y = if (offset < -cons.PHYSICS_UNIT / 5) 1 else if (offset > cons.PHYSICS_UNIT / 5) -1 else 0;
+        }
     }
-
     b2.b2Body_SetLinearVelocity(body_id, b2.b2MulSV(speed, input_vector));
 }
