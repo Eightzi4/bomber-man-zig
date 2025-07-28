@@ -4,19 +4,8 @@ const b2 = @cImport({
     @cInclude("box2d/box2d.h");
 });
 
-const types = @import("types.zig");
 const cons = @import("constants.zig");
-
-pub fn isPointInRect(point: types.Vec2, rect_pos: types.Vec2, rect_size: types.Vec2) bool {
-    return point.x >= rect_pos.x and point.x < rect_pos.x + rect_size.x and point.y >= rect_pos.y and point.y < rect_pos.y + rect_size.y;
-}
-
-pub fn screenPosToPhysPos(screen_pos: b2.b2Vec2, cell_size: f32) b2.b2Vec2 {
-    return .{
-        .x = (screen_pos.x - cell_size / 2 - cell_size * cons.GUI_SIZE) / cell_size * cons.PHYSICS_UNIT,
-        .y = (screen_pos.y - cell_size / 2) / cell_size * cons.PHYSICS_UNIT,
-    };
-}
+const types = @import("types.zig");
 
 pub fn physPosToScreenPos(phys_pos: b2.b2Vec2, cell_size: f32) b2.b2Vec2 {
     return .{

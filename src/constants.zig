@@ -30,7 +30,10 @@ pub const PHYSICS_SUBSTEP_COUNT = 4;
 
 pub const EXPLOSION_DURATION = 1; // seconds
 pub const INVINCIBILITY_DURATION = 3; // seconds
-pub const FLASH_COOLDOWN = 5; // seconds
+pub const INITIAL_TELEPORT_COOLDOWN = 5.5; // seconds
+
+pub const ANIMATION_PLAYBACK_SPEED = 8;
+pub const PLAYER_ANIMATION_SEQUENCE = [_]u8{ 1, 0, 2, 0 };
 
 pub const START_HEALTH = 3;
 pub const MAX_DYNAMITE_COUNT = 10;

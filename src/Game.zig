@@ -4,11 +4,11 @@ const b2 = @cImport({
     @cInclude("box2d/box2d.h");
 });
 
-const types = @import("types.zig");
-const funcs = @import("functions.zig");
 const cons = @import("constants.zig");
-const Player = @import("Player.zig");
 const Data = @import("Data.zig");
+const funcs = @import("functions.zig");
+const Player = @import("Player.zig");
+const types = @import("types.zig");
 
 world_id: b2.b2WorldId,
 cell_grid: [cons.GRID_SIZE.y][cons.GRID_SIZE.x]types.Cell,
@@ -85,8 +85,8 @@ fn fixedUpdate(self: *@This()) void {
     while (iterator.next()) |opt_player| if (opt_player.value.*) |*player| if (player.health > 0) {
         player.fixedUpdate();
 
-        if (player.flash_request) |direction| {
-            player.flash_request = null;
+        if (player.teleport_request) |direction| {
+            player.teleport_request = null;
 
             const current_pos = b2.b2Body_GetPosition(player.body_id);
             const direction_vector = cons.DIRECTIONS[@intFromEnum(direction)];
@@ -103,7 +103,7 @@ fn fixedUpdate(self: *@This()) void {
                 const dest_cell = self.cell_grid[@intFromFloat(grid_pos.y)][@intFromFloat(grid_pos.x)];
                 if (dest_cell.tag != .wall and dest_cell.tag != .death_wall and dest_cell.tag != .barrel) {
                     b2.b2Body_SetTransform(player.body_id, .{ .x = grid_pos.x * cons.PHYSICS_UNIT, .y = grid_pos.y * cons.PHYSICS_UNIT }, .{ .c = 1, .s = 0 });
-                    player.flash_timer = cons.FLASH_COOLDOWN;
+                    player.teleport_timer = player.teleport_cooldown;
                 }
             }
         }
@@ -168,11 +168,11 @@ fn drawGui(self: *@This()) void {
 
         rl.drawRectangle(0, 0, screen_width, screen_height, rl.fade(.black, 0.75));
 
-        var win_text_buf: [128]u8 = undefined;
-        const win_text = std.fmt.bufPrintZ(&win_text_buf, "Player {s} wins!\nScore: {d}", .{
+        var win_text_buffer: [32]u8 = undefined; // HARDCODED to fit exactly "Player XXXXX wins!\nScore: XXXXX\0"
+        const win_text = std.fmt.bufPrintZ(&win_text_buffer, "Player {s} wins!\nScore: {}", .{
             @tagName(team),
             the_winner.score,
-        }) catch "Error";
+        }) catch @panic("Failed to format win text!");
 
         const font_size: i32 = 60;
         const text_size = rl.measureTextEx(rl.getFontDefault() catch @panic("Failed to load default font!"), win_text, @as(f32, @floatFromInt(font_size)), 1);
@@ -242,13 +242,16 @@ fn drawGui(self: *@This()) void {
         while (rl.measureText(name, name_font_size) > text_area_width and name_font_size > 8) {
             name_font_size -= 1;
         }
+
         const name_pos_y = @as(i32, @intFromFloat(icon_dest_rect.y));
+
         rl.drawText(name, text_area_x, name_pos_y, name_font_size, .black);
 
-        var score_buf: [32]u8 = undefined;
-        const score_text = std.fmt.bufPrintZ(&score_buf, "Score: {d}", .{player.score}) catch "Score Error";
+        var score_buf: [13]u8 = undefined; // HARDCODED to fit exactly "Score: XXXXX\0"
+        const score_text = std.fmt.bufPrintZ(&score_buf, "Score: {}", .{player.score}) catch @panic("Failed to format score!");
         const score_font_size = @as(i32, @intFromFloat(@max(10.0, cell_size * 0.4)));
         const score_pos_y = name_pos_y + name_font_size + @as(i32, @intFromFloat(padding * 0.5));
+
         rl.drawText(score_text, text_area_x, score_pos_y, score_font_size, .light_gray);
 
         const stats_area_y = icon_dest_rect.y + icon_dest_rect.height + padding / 2;
@@ -266,6 +269,7 @@ fn drawGui(self: *@This()) void {
                 .x = hearts_start_x + (@as(f32, @floatFromInt(j)) * (heart_icon_size + heart_spacing)),
                 .y = stats_area_y,
             };
+
             rl.drawCircleV(.{ .x = heart_pos.x + heart_icon_size / 2.0, .y = heart_pos.y + heart_icon_size / 2.0 }, heart_icon_size / 2.0 + 1.0, .white);
             rl.drawTextureEx(hearth_texture, heart_pos, 0.0, heart_icon_size / @as(f32, @floatFromInt(hearth_texture.width)), .white);
         }
@@ -448,6 +452,7 @@ fn checkPlayerPositions(self: *@This()) void {
             .ground, .dynamite_1, .dynamite_2 => {},
             .explosion_1, .explosion_2 => {
                 const damaging_team = cell.variant.explosion_1.team;
+
                 if (damaging_team != opt_player.key) {
                     if (self.opt_players.getPtr(damaging_team).*) |*damaging_player| {
                         if (player.invincibility_timer < 0) damaging_player.score += 25;
@@ -477,7 +482,10 @@ fn checkPlayerPositions(self: *@This()) void {
             },
             .upgrade_teleport => {
                 player.score += 2;
-                player.flash_timer = 0;
+                player.teleport_timer = 0;
+
+                if (player.teleport_cooldown > 2.0) player.teleport_cooldown -= 0.5;
+
                 cell.* = .initGround();
             },
             else => unreachable,
