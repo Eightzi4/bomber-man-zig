@@ -1,16 +1,16 @@
 .{
-    .name = .PlayingWithFire,
-    .version = "0.0.0",
-    .fingerprint = 0xe8c5c823e29bcba8,
-    .minimum_zig_version = "0.14.0",
+    .name = .BomberManZig,
+    .version = "0.1.0",
+    .fingerprint = 0x1b7e8ccd15ba60b9,
+    .minimum_zig_version = "0.15.1",
     .dependencies = .{
         .raylib_zig = .{
-            .url = "git+https://github.com/Not-Nik/raylib-zig?ref=devel#d4fc514d54a3b37b9b3e4f4983f611c3469e8c2a",
-            .hash = "raylib_zig-5.6.0-dev-KE8REHguBQAE0xoNkra7mtEqr8cCZHk7k_03txLZB-cZ",
+            .url = "git+https://github.com/raylib-zig/raylib-zig?ref=devel#178530d5f5e654d9eb1d7a79e3fbfbd931e26163",
+            .hash = "raylib_zig-5.6.0-dev-KE8REKo6BQDt6jBeo3ODV5g9kzo2IRfJARkaN0kXtC2T",
         },
         .box2d = .{
-            .url = "git+https://github.com/allyourcodebase/box2d?ref=main#bbe6c5bacc0066edee04011a3baed69b517edf20",
-            .hash = "box2d-3.0.0-1-AAAAAH8XAADUTGcWSHwszHXeUywIFxMa8_KStR3mHGlX",
+            .url = "git+https://github.com/erincatto/box2d.git?ref=main#af12713103083d4f853cfb1c65edaf96b0e43598",
+            .hash = "N-V-__8AAEfhLgAzPYYM3BMJqKBZvorfAtioq8f-fJpI3Qvp",
         },
     },
     .paths = .{

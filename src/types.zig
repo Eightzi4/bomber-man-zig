@@ -1,10 +1,8 @@
 const std = @import("std");
 const rl = @import("raylib");
-const b2 = @cImport({
-    @cInclude("box2d/box2d.h");
-});
+const b2 = glbs.b2;
 
-const cons = @import("constants.zig");
+const glbs = @import("globals.zig");
 const funcs = @import("functions.zig");
 const Player = @import("Player.zig");
 
@@ -15,31 +13,7 @@ pub fn Vec2(comptime T: type) type {
     };
 }
 
-pub const Texture = enum {
-    ground,
-    wall,
-    death_wall,
-    barrel,
-    dynamite_1,
-    dynamite_2,
-    explosion_1,
-    explosion_2,
-    upgrade_dynamite,
-    upgrade_heal,
-    upgrade_radius,
-    upgrade_speed,
-    upgrade_teleport,
-    hearth,
-    invincible_hearth,
-    player_down_1,
-    player_down_2,
-    player_down_3,
-    player_side_1,
-    player_side_2,
-    player_side_3,
-    player_up_1,
-    player_up_2,
-};
+pub const Texture = @import("resources").Texture;
 
 pub const TeamTextures = struct {
     player_textures: PlayerTextures,
@@ -49,8 +23,8 @@ pub const TeamTextures = struct {
 
 pub const PlayerTextures = struct {
     side: [3]rl.Texture2D,
-    down: [2]rl.Texture2D,
-    up: [2]rl.Texture2D,
+    down: [3]rl.Texture2D,
+    up: [3]rl.Texture2D,
 };
 
 pub const Team = enum {
@@ -96,7 +70,7 @@ pub const Explosion = struct {
     upgrade_underneath: UpgradeUnderneath,
 
     pub fn update(self: *@This()) void {
-        self.timer -= cons.PHYSICS_TIMESTEP;
+        self.timer -= glbs.PHYSICS_TIMESTEP;
     }
 };
 
@@ -111,17 +85,17 @@ pub const Cell = struct {
         };
     }
 
-    pub fn initWall(x: u8, y: u8, world_id: b2.b2WorldId) @This() {
+    pub fn initWall(world_id: b2.b2WorldId, coords: Vec2(u8)) @This() {
         return .{
             .tag = .wall,
-            .variant = .{ .wall = .{ .body_id = funcs.createCollider(x, y, world_id) } },
+            .variant = .{ .wall = .{ .body_id = funcs.createCollider(world_id, coords) } },
         };
     }
 
-    pub fn initBarrel(x: u8, y: u8, world_id: b2.b2WorldId) @This() {
+    pub fn initBarrel(world_id: b2.b2WorldId, coords: Vec2(u8)) @This() {
         return .{
             .tag = .barrel,
-            .variant = .{ .barrel = .{ .body_id = funcs.createCollider(x, y, world_id) } },
+            .variant = .{ .barrel = .{ .body_id = funcs.createCollider(world_id, coords) } },
         };
     }
 
@@ -131,7 +105,7 @@ pub const Cell = struct {
             .variant = .{ .explosion_1 = .{
                 .team = team,
                 .variant = variant,
-                .timer = cons.EXPLOSION_DURATION,
+                .timer = glbs.EXPLOSION_DURATION,
                 .upgrade_underneath = upgrade_underneath,
             } },
         };
@@ -188,32 +162,13 @@ pub const Dynamite = struct {
         return .{
             .team = team,
             .state = .idle,
-            .timer = 3,
+            .timer = glbs.EXPLOSION_DELAY,
             .radius = radius,
         };
     }
 
     pub fn update(self: *@This()) void {
-        self.timer -= cons.PHYSICS_TIMESTEP;
-    }
-
-    pub fn draw(self: @This(), textures: [2]rl.Texture2D) void {
-        if (self.state == .idle) {
-            funcs.drawTexture(textures[0], self.position);
-        }
-    }
-
-    pub fn switchState(self: *@This()) void {
-        switch (self.state) {
-            .idle => {
-                self.state = .exploding;
-                self.timer = cons.EXPLOSION_DURATION;
-            },
-            .exploding => {
-                self.state = .exploded;
-            },
-            .exploded => unreachable,
-        }
+        self.timer -= glbs.PHYSICS_TIMESTEP;
     }
 };
 

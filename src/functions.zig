@@ -1,16 +1,14 @@
 const std = @import("std");
 const rl = @import("raylib");
-const b2 = @cImport({
-    @cInclude("box2d/box2d.h");
-});
+const b2 = glbs.b2;
 
-const cons = @import("constants.zig");
+const glbs = @import("globals.zig");
 const types = @import("types.zig");
 
 pub fn physPosToScreenPos(phys_pos: b2.b2Vec2, cell_size: f32) b2.b2Vec2 {
     return .{
-        .x = phys_pos.x / cons.PHYSICS_UNIT * cell_size + cell_size / 2 + cell_size * cons.GUI_SIZE,
-        .y = phys_pos.y / cons.PHYSICS_UNIT * cell_size + cell_size / 2,
+        .x = phys_pos.x / glbs.PHYSICS_UNIT * cell_size + cell_size / 2 + cell_size * glbs.GUI_SIZE,
+        .y = phys_pos.y / glbs.PHYSICS_UNIT * cell_size + cell_size / 2,
     };
 }
 
@@ -23,28 +21,32 @@ pub fn drawRectangleWithOutline(pos: b2.b2Vec2, size: b2.b2Vec2, color: rl.Color
     );
 }
 
-pub fn drawGridTexture(texture: rl.Texture2D, pos: b2.b2Vec2, cell_size: f32) void {
-    drawTexture(texture, .{ .x = cons.GUI_SIZE * cell_size + cell_size * pos.x + cell_size / 2, .y = cell_size * pos.y + cell_size / 2 }, 0, cell_size, false);
+/// Draw texture at coordinates
+pub fn drawTextureCoords(texture: rl.Texture2D, cell_size: f32, coords: types.Vec2(usize), rot: f32, flip_h: bool) void {
+    drawTexture(
+        texture,
+        cell_size,
+        .{ .x = glbs.GUI_SIZE * cell_size + cell_size * @as(f32, @floatFromInt(coords.x)) + cell_size / 2, .y = cell_size * @as(f32, @floatFromInt(coords.y)) + cell_size / 2 },
+        rot,
+        flip_h,
+    );
 }
 
-pub fn drawCenteredTexture(texture: rl.Texture2D, pos: b2.b2Vec2, rot: f32, cell_size: f32, flip_h: bool) void {
-    drawTexture(texture, pos, rot, cell_size, flip_h);
+/// Draw texture at position
+pub fn drawTexturePos(texture: rl.Texture2D, cell_size: f32, pos: b2.b2Vec2, rot: f32, flip_h: bool) void {
+    drawTexture(texture, cell_size, pos, rot, flip_h);
 }
 
-fn drawTexture(texture: rl.Texture2D, pos: b2.b2Vec2, rot: f32, cell_size: f32, flip_h: bool) void {
+fn drawTexture(texture: rl.Texture2D, cell_size: f32, pos: b2.b2Vec2, rot: f32, flip_h: bool) void {
     const scale = cell_size / @as(f32, @floatFromInt(texture.width));
-    var src = rl.Rectangle{
+    const src = rl.Rectangle{
         .x = 0,
         .y = 0,
-        .width = @floatFromInt(texture.width),
+        .width = @floatFromInt(texture.width * @as(c_int, if (flip_h) -1 else 1)),
         .height = @floatFromInt(texture.height),
     };
 
-    if (flip_h) {
-        src.width *= -1;
-    }
-
-    const dest = rl.Rectangle{
+    const dst = rl.Rectangle{
         .x = pos.x,
         .y = pos.y,
         .width = @as(f32, @floatFromInt(texture.width)) * scale,
@@ -55,14 +57,14 @@ fn drawTexture(texture: rl.Texture2D, pos: b2.b2Vec2, rot: f32, cell_size: f32, 
         .y = @as(f32, @floatFromInt(texture.height)) * scale / 2,
     };
 
-    rl.drawTexturePro(texture, src, dest, origin, rot, .white);
+    rl.drawTexturePro(texture, src, dst, origin, rot, .white);
 }
 
-pub fn createCollider(x: usize, y: usize, world_id: b2.b2WorldId) b2.b2BodyId {
+pub fn createCollider(world_id: b2.b2WorldId, coords: types.Vec2(u8)) b2.b2BodyId {
     var body_def = b2.b2DefaultBodyDef();
     body_def.position = .{
-        .x = @floatFromInt(cons.PHYSICS_UNIT * x),
-        .y = @floatFromInt(cons.PHYSICS_UNIT * y),
+        .x = @floatFromInt(glbs.PHYSICS_UNIT * @as(i32, @intCast(coords.x))),
+        .y = @floatFromInt(glbs.PHYSICS_UNIT * @as(i32, @intCast(coords.y))),
     };
 
     const body_id = b2.b2CreateBody(world_id, &body_def);
@@ -70,8 +72,18 @@ pub fn createCollider(x: usize, y: usize, world_id: b2.b2WorldId) b2.b2BodyId {
     _ = b2.b2CreatePolygonShape(
         body_id,
         &b2.b2DefaultShapeDef(),
-        &b2.b2MakeBox(@as(f32, @floatFromInt(cons.PHYSICS_UNIT)) / 2, @as(f32, @floatFromInt(cons.PHYSICS_UNIT)) / 2),
+        &b2.b2MakeBox(glbs.PHYSICS_UNIT / 2, glbs.PHYSICS_UNIT / 2),
     );
 
     return body_id;
+}
+
+pub fn textureFlipHorizontal(texture: rl.Texture2D) rl.Texture2D {
+    defer rl.unloadTexture(texture);
+    var img = rl.loadImageFromTexture(texture) catch @panic("Failed to load image from texture!");
+    defer rl.unloadImage(img);
+
+    img.flipHorizontal();
+
+    return rl.loadTextureFromImage(img) catch @panic("Failed to load texture from image!");
 }

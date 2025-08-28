@@ -1,7 +1,7 @@
 const std = @import("std");
 const rl = @import("raylib");
 
-const cons = @import("constants.zig");
+const glbs = @import("globals.zig");
 const types = @import("types.zig");
 const Game = @import("Game.zig");
 const Player = @import("Player.zig");
@@ -18,22 +18,15 @@ prng: std.Random.Xoshiro256,
 state: State,
 team_colors: std.enums.EnumArray(types.Team, rl.Color),
 textures: std.enums.EnumArray(types.Texture, rl.Texture2D),
-original_ground_image: rl.Image,
 cell_size: f32,
-player_count: i32,
+player_count: u8,
 key_bindings: std.enums.EnumArray(types.Team, Player.Actions),
 
 pub fn init() @This() {
-    const cell_size = @as(f32, @floatFromInt(rl.getScreenHeight())) / cons.GRID_SIZE.y;
-    var textures = loadTextures();
-    const original_ground_image = rl.loadImageFromTexture(textures.get(.ground)) catch @panic("Failed to load ground image!");
-
-    resizeGroundTexture(&textures, original_ground_image, cell_size);
-
     return .{
         .prng = D: {
             var seed: u64 = undefined;
-            std.posix.getrandom(std.mem.asBytes(&seed)) catch unreachable;
+            std.posix.getrandom(std.mem.asBytes(&seed)) catch @panic("Failed to get random seed!");
             break :D std.Random.DefaultPrng.init(seed);
         },
         .state = .initialization,
@@ -47,9 +40,8 @@ pub fn init() @This() {
 
             break :D std.enums.EnumArray(types.Team, rl.Color).init(default_colors);
         },
-        .textures = textures,
-        .original_ground_image = original_ground_image,
-        .cell_size = cell_size,
+        .textures = loadTextures(),
+        .cell_size = @as(f32, @floatFromInt(rl.getScreenHeight())) / glbs.GRID_SIZE.y,
         .player_count = 2,
         .key_bindings = .init(.{
             .alpha = .{
@@ -98,12 +90,10 @@ pub fn deinit(self: *@This()) void {
 
 pub fn update(self: *@This()) void {
     if (rl.isWindowResized()) {
-        const cell_size_from_height = @as(f32, @floatFromInt(rl.getScreenHeight())) / @as(f32, @floatFromInt(cons.GRID_SIZE.y));
-        const cell_size_from_width = @as(f32, @floatFromInt(rl.getScreenWidth())) / @as(f32, @floatFromInt(cons.GRID_SIZE.x)) + cons.GUI_SIZE;
+        const cell_size_from_width = @as(f32, @floatFromInt(rl.getScreenWidth())) / (glbs.GRID_SIZE.x + glbs.GUI_SIZE);
+        const cell_size_from_height = @as(f32, @floatFromInt(rl.getScreenHeight())) / glbs.GRID_SIZE.y;
 
-        self.cell_size = @max(@min(cell_size_from_width, cell_size_from_height), 1.0);
-
-        resizeGroundTexture(&self.textures, self.original_ground_image, self.cell_size);
+        self.cell_size = @max(@min(cell_size_from_width, cell_size_from_height), 1);
     }
 }
 
@@ -141,7 +131,7 @@ pub fn runGame(data: *@This()) State {
         const team: types.Team = @enumFromInt(i);
 
         game.opt_players.set(team, .init(
-            cons.PLAYER_START_POSITIONS[i],
+            glbs.PLAYER_START_POSITIONS[i],
             game.world_id,
             data.key_bindings.get(team),
             &game.team_textures.getPtr(team).player_textures,
@@ -160,27 +150,17 @@ pub fn runGame(data: *@This()) State {
 }
 
 fn loadTextures() std.enums.EnumArray(types.Texture, rl.Texture2D) {
-    var dir = std.fs.cwd().openDir(cons.ASSET_DIRECTORY_PATH, .{ .iterate = true }) catch @panic("Failed to open assets directory!");
-    defer dir.close();
-
     var textures = std.enums.EnumArray(types.Texture, rl.Texture2D).initUndefined();
-    var buffer: [100]u8 = undefined; // HARDCODED, should be enough tho
-    var fb_allocator = std.heap.FixedBufferAllocator.init(&buffer);
 
-    var file_iterator = dir.iterate();
-    while (file_iterator.next() catch @panic("Directory iteration failed!")) |entry| {
-        if (entry.kind != .file) @panic("Not an image file!");
+    for (std.enums.values(types.Texture)) |texture_variant| {
+        const img = rl.loadImageFromMemory(".png", @import("resources").TEXTURES.get(texture_variant)) catch @panic("Failed to load image!");
+        defer rl.unloadImage(img);
 
-        const ext = std.fs.path.extension(entry.name);
-        if (!std.mem.eql(u8, ext, ".png")) @panic("Unsupported asset file type!");
+        const texture = rl.loadTextureFromImage(img) catch @panic("Failed to load texture!");
 
-        const texture_path = std.fs.path.joinZ(fb_allocator.allocator(), &.{ cons.ASSET_DIRECTORY_PATH, entry.name }) catch @panic("Failed to join paths!");
-        defer fb_allocator.reset();
-
-        const texture = rl.loadTexture(texture_path) catch @panic("Failed to load texture!");
         rl.setTextureFilter(texture, rl.TextureFilter.point);
 
-        textures.set(std.meta.stringToEnum(types.Texture, entry.name[0 .. entry.name.len - 4]) orelse @panic("Wrong asset name!"), texture);
+        textures.set(texture_variant, texture);
     }
 
     return textures;
@@ -188,13 +168,4 @@ fn loadTextures() std.enums.EnumArray(types.Texture, rl.Texture2D) {
 
 fn unloadTextures(textures: std.enums.EnumArray(types.Texture, rl.Texture2D)) void {
     for (textures.values) |texture| rl.unloadTexture(texture);
-}
-
-fn resizeGroundTexture(textures: *std.enums.EnumArray(types.Texture, rl.Texture2D), original_ground_image: rl.Image, cell_size: f32) void {
-    var img = original_ground_image.copy();
-    defer rl.unloadImage(img);
-    img.resizeNN(@intFromFloat(cell_size), @intFromFloat(cell_size));
-
-    rl.unloadTexture(textures.get(.ground));
-    textures.set(.ground, rl.loadTextureFromImage(img) catch @panic("Failed to load ground texture"));
 }
