@@ -38,25 +38,17 @@ pub fn init(data: *Data) @This() {
 pub fn deinit(self: *@This()) void {
     b2.b2DestroyWorld(self.world_id);
 
-    for (self.team_textures.values[0..self.data.player_count]) |team_textures| {
-        for (team_textures.player_textures.side) |texture| {
-            rl.unloadTexture(texture);
+    const deinit_textures = struct {
+        fn deinit_textures(textures_struct: anytype) void {
+            inline for (@typeInfo(@TypeOf(textures_struct)).@"struct".fields) |field| {
+                if (@typeInfo(field.type) == .@"struct")
+                    deinit_textures(@field(textures_struct, field.name))
+                else for (@field(textures_struct, field.name)) |texture| rl.unloadTexture(texture);
+            }
         }
-        for (team_textures.player_textures.up) |texture| {
-            rl.unloadTexture(texture);
-        }
-        for (team_textures.player_textures.down) |texture| {
-            rl.unloadTexture(texture);
-        }
+    }.deinit_textures;
 
-        for (team_textures.dynamite_textures) |texture| {
-            rl.unloadTexture(texture);
-        }
-
-        for (team_textures.explosion_textures) |texture| {
-            rl.unloadTexture(texture);
-        }
-    }
+    for (self.team_textures.values[0..self.data.player_count]) |team_textures| deinit_textures(team_textures);
 }
 
 pub fn update(self: *@This()) void {
@@ -99,6 +91,7 @@ fn fixedUpdate(self: *@This()) void {
 
             if (grid_pos.x >= 0 and grid_pos.x < glbs.GRID_SIZE.x and grid_pos.y >= 0 and grid_pos.y < glbs.GRID_SIZE.y) {
                 const dst_cell = self.cell_grid[@intFromFloat(grid_pos.y)][@intFromFloat(grid_pos.x)];
+
                 if (dst_cell.tag != .wall and dst_cell.tag != .death_wall and dst_cell.tag != .barrel) {
                     b2.b2Body_SetTransform(player.body_id, .{ .x = grid_pos.x * glbs.PHYSICS_UNIT, .y = grid_pos.y * glbs.PHYSICS_UNIT }, .{ .c = 1, .s = 0 });
                     player.teleport_timer = player.teleport_cooldown;
@@ -108,6 +101,7 @@ fn fixedUpdate(self: *@This()) void {
 
         if (player.actions.place_dynamite.cached_input) {
             player.actions.place_dynamite.cached_input = false;
+
             if (player.dynamite_count > 0) {
                 const position = b2.b2Body_GetPosition(player.body_id);
                 const grid_pos = types.Vec2(usize){
@@ -115,6 +109,7 @@ fn fixedUpdate(self: *@This()) void {
                     .y = @intFromFloat(@round(position.y / glbs.PHYSICS_UNIT)),
                 };
                 const cell = &self.cell_grid[grid_pos.y][grid_pos.x];
+
                 if (cell.tag != .dynamite_1 and cell.tag != .dynamite_2) {
                     cell.* = .initDynamite(opt_player.key, player.explosion_radius);
                     player.dynamite_count -= 1;
@@ -399,14 +394,7 @@ fn drawBackground(self: *@This()) void {
         .height = @floatFromInt(glbs.GRID_SIZE.y * ground_texture.height),
     };
 
-    rl.drawTexturePro(
-        ground_texture,
-        src,
-        dst,
-        rl.Vector2.zero(),
-        0,
-        .white,
-    );
+    rl.drawTexturePro(ground_texture, src, dst, rl.Vector2.zero(), 0, .white);
 
     for (0..glbs.GRID_SIZE.y) |y| {
         for (0..glbs.GRID_SIZE.x) |x| {
@@ -543,9 +531,7 @@ fn updateDynamitesAndExplosions(self: *@This()) void {
                                     );
                                 },
                                 .barrel => {
-                                    if (self.opt_players.getPtr(cell.variant.dynamite_1.team).*) |*player| {
-                                        player.score += 5;
-                                    }
+                                    if (self.opt_players.getPtr(cell.variant.dynamite_1.team).*) |*player| player.score += 5;
 
                                     b2.b2DestroyBody(cell_in_radius.variant.barrel.body_id);
 
@@ -614,9 +600,10 @@ fn decayExplosions(self: *@This()) void {
                 cell.variant.explosion_1.timer -= glbs.PHYSICS_TIMESTEP;
 
                 if (cell.variant.explosion_1.timer < 0) {
-                    if (cell.variant.explosion_1.upgrade_underneath != .none) {
-                        cell.* = .initUpgrade(cell.variant.explosion_1.upgrade_underneath);
-                    } else cell.* = .initGround();
+                    cell.* = if (cell.variant.explosion_1.upgrade_underneath != .none)
+                        .initUpgrade(cell.variant.explosion_1.upgrade_underneath)
+                    else
+                        .initGround();
                 }
             }
         }
