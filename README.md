@@ -20,9 +20,9 @@ This project is a single-pc-multiplayer "last-man-standing" game where players n
 
 One of the primary goals of this project was to create a game with a small footprint, showcasing the efficiency of Zig and careful resource management.
 
-*   **Executable Size:** The entire game is a single executable file under **2 MB**.
+*   **Executable Size:** The entire game is contained in a standalone executable file with size under **1 MB**.
 *   **Resource Consumption:**
-    *   **CPU:** ~2% on an AMD Ryzen 5 3600 6-Core processor.
+    *   **CPU:** < 2% on an AMD Ryzen 5 3600 6-Core processor.
     *   **GPU:** < 2% on an NVIDIA GeForce GTX 1660 Ti.
     *   **RAM:** < 50 MB.
 *   **Memory Management:** The project features no dynamic memory allocations (on the Zig side) and avoids global mutable variables, contributing to its stability and predictable performance.

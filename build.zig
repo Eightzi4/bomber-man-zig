@@ -5,11 +5,13 @@ const SHOULD_LEAK = false;
 pub fn build(b: *std.Build) void {
     const target = b.standardTargetOptions(.{});
     const optimize = b.standardOptimizeOption(.{});
+    const strip = optimize != .Debug;
 
     const exe_mod = b.createModule(.{
         .root_source_file = b.path("src/main.zig"),
         .target = target,
         .optimize = optimize,
+        .strip = strip,
     });
 
     const exe = b.addExecutable(.{
@@ -25,6 +27,7 @@ pub fn build(b: *std.Build) void {
             .root_source_file = b.path("resources/resources.zig"),
             .target = target,
             .optimize = optimize,
+            .strip = strip,
         });
 
         // 'texture_file_names' build option will be used to generate resources/resources.zig@Texture enum
@@ -63,7 +66,10 @@ pub fn build(b: *std.Build) void {
             .optimize = optimize,
         });
 
-        exe.root_module.linkLibrary(raylib_dep.artifact("raylib"));
+        const raylib_lib = raylib_dep.artifact("raylib");
+        raylib_lib.lto = .full;
+        exe.root_module.linkLibrary(raylib_lib);
+
         exe.root_module.addImport("raylib", raylib_dep.module("raylib"));
         exe.root_module.addImport("raygui", raylib_dep.module("raygui"));
     }
@@ -78,6 +84,7 @@ pub fn build(b: *std.Build) void {
             .root_module = b.createModule(.{
                 .target = target,
                 .optimize = optimize,
+                .strip = strip,
             }),
         });
 
@@ -102,6 +109,7 @@ pub fn build(b: *std.Build) void {
             b.allocator.free(files);
         };
 
+        box2d.lto = .full;
         box2d.root_module.link_libc = true;
         box2d.root_module.addIncludePath(box2d_dep.path("include"));
         box2d.installHeadersDirectory(box2d_dep.path("include"), "", .{});
