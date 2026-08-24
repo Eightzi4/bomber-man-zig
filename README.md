@@ -4,11 +4,11 @@ A classic Bomberman-style arena game built in the Zig programming language. This
 
 ![Bomber Man Zig Gameplay Screenshot](resources/bmz.png)
 
-## 🚀 Overview
+## Overview
 
 This project is a single-pc-multiplayer "last-man-standing" game where players navigate a grid, place bombs, and use power-ups to defeat their opponents. The game is built with a focus on performance and simplicity, leveraging the power of Zig for a minimal footprint and direct control over system resources.
 
-## ✨ Features
+## Features
 
 *   **Local Multiplayer:** Supports 2 to 4 players on a single machine.
 *   **Dynamic Arena:** The game map is procedurally generated with destructible barrels.
@@ -16,7 +16,7 @@ This project is a single-pc-multiplayer "last-man-standing" game where players n
 *   **Rebindable Controls:** A settings menu allows players to customize their keybindings and team colors.
 *   **Highly Optimized:** The game is lightweight with low resource consumption.
 
-## 💻 Performance & Technical Details
+## Performance & Technical Details
 
 One of the primary goals of this project was to create a game with a small footprint, showcasing the efficiency of Zig and careful resource management.
 
@@ -32,7 +32,7 @@ One of the primary goals of this project was to create a game with a small footp
     *   **Physics:** [Box2D](https://box2d.org/) (a 2D rigid body simulation library).
     *   **Build System:** Built entirely with Zig's integrated build system.
 
-## 🎮 Gameplay
+## Gameplay
 
 ### Objective
 
@@ -49,15 +49,15 @@ The goal is simple: be the last Bomberman standing. Eliminate your opponents by 
 
 Destroying barrels may reveal a random power-up. Walk over an item to collect it and gain an advantage!
 
-| Icon | Power-up | Description |
-| :--: | :--- | :--- |
-| ❤️ | **Heal** | Restores one point of health. |
-| 💣 | **Extra Dynamite**| Increases the number of bombs you can place at one time. |
-| 🔥 | **Radius Upgrade**| Increases the explosion radius of your bombs by one tile. |
-| 💨 | **Speed Up** | Increases your character's movement speed. |
-| 🌀 | **Teleport Upgrade**| Unlocks the ability to teleport. |
+| Name | Description |
+| :--- | :--- |
+| **Heal** | Restores one point of health. |
+| **Extra Dynamite**| Increases the number of bombs you can place at one time. |
+| **Radius Upgrade**| Increases the explosion radius of your bombs by one tile. |
+| **Speed Up** | Increases your character's movement speed. |
+| **Teleport Upgrade**| Unlocks the ability to teleport. |
 
-## ⌨️ Controls
+## Controls
 
 The game supports up to four players with default keyboard layouts. All keys are rebindable in the **Settings** menu.
 
